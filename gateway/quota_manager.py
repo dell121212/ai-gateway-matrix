@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""基于 Redis 的凭据级/渠道级原子额度预占与被动熔断。"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+from typing import Any, Iterable, Optional
+
+from . import usage_tracker
+
+logger = logging.getLogger("ai_gateway_matrix.quota")
+KEY_PREFIX = "gwmatrix:routing"
+
+_RESERVE_SCRIPT = """
+for i = 1, #KEYS do
+  local current = tonumber(redis.call('GET', KEYS[i]) or '0')
+  local limit = tonumber(ARGV[(i - 1) * 3 + 1])
+  local amount = tonumber(ARGV[(i - 1) * 3 + 2])
+  if limit > 0 and current + amount > limit then
+    return 0
+  end
+end
+for i = 1, #KEYS do
+  local amount = tonumber(ARGV[(i - 1) * 3 + 2])
+  local window = tonumber(ARGV[(i - 1) * 3 + 3])
+  redis.call('INCRBY', KEYS[i], amount)
+  if redis.call('TTL', KEYS[i]) < 0 then
+    redis.call('EXPIRE', KEYS[i], window)
+  end
+end
+return 1
+"""
+
+
+def _safe_id(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:20]
+
+
+async def reserve_limits(items: list[tuple[str, int, int]], amount: int = 1) -> bool:
+    """在一个 Lua 脚本中检查并预占多个共享窗口，避免并发超卖。"""
+    client = usage_tracker.get_client()
+    if client is None:
+        return True  # Redis 失效时保持网关可用，但无法保证本地预占精度
+    usable = [
+        (key, int(limit), int(window))
+        for key, limit, window in items
+        if isinstance(limit, int) and limit > 0 and isinstance(window, int) and window > 0
+    ]
+    if not usable:
+        return True
+    keys = [f"{KEY_PREFIX}:quota:{_safe_id(key)}:{window}" for key, _, window in usable]
+    args: list[int] = []
+    for _, limit, window in usable:
+        args.extend((limit, amount, window))
+    try:
+        result = await client.eval(_RESERVE_SCRIPT, len(keys), *keys, *args)
+        return bool(result)
+    except Exception as exc:
+        logger.warning("额度原子预占失败，降级为不拦截: %s", type(exc).__name__)
+        return True
+
+
+async def reserve_channel(channel: dict[str, Any]) -> bool:
+    display_id = str(channel.get("display_id", ""))
+    env_var = str(channel.get("env_var") or "no-credential")
+    limits = [
+        (f"channel:{display_id}:rpm", channel.get("rpm_limit") or 0, 60),
+        (f"credential:{env_var}:rpm", channel.get("credential_rpm_limit") or 0, 60),
+    ]
+    for item in channel.get("additional_limits") or []:
+        if not isinstance(item, dict):
+            continue
+        scope = item.get("scope", "credential")
+        identity = display_id if scope == "channel" else env_var
+        limits.append((
+            f"{scope}:{identity}:{item.get('type', 'requests')}",
+            item.get("limit") or 0,
+            item.get("window_seconds") or 0,
+        ))
+    return await reserve_limits(limits)
+
+
+async def cooldown_remaining(display_id: str) -> int:
+    client = usage_tracker.get_client()
+    if client is None:
+        return 0
+    try:
+        ttl = await client.ttl(f"{KEY_PREFIX}:cooldown:{_safe_id(display_id)}")
+        return ttl if isinstance(ttl, int) and ttl > 0 else 0
+    except Exception:
+        return 0
+
+
+async def mark_failure(display_id: str, error_class: str) -> None:
+    client = usage_tracker.get_client()
+    if client is None:
+        return
+    ttl_by_class = {
+        "auth_error": 86400,
+        "quota_error": 3600,
+        "rate_limit": 60,
+        "timeout": 30,
+        "router_exhausted": 30,
+        "unknown": 20,
+    }
+    ttl = ttl_by_class.get(error_class, 20)
+    try:
+        await client.set(
+            f"{KEY_PREFIX}:cooldown:{_safe_id(display_id)}",
+            error_class,
+            ex=ttl,
+        )
+    except Exception:
+        pass
+
+
+async def mark_success(display_id: str) -> None:
+    client = usage_tracker.get_client()
+    if client is None:
+        return
+    try:
+        await client.delete(f"{KEY_PREFIX}:cooldown:{_safe_id(display_id)}")
+    except Exception:
+        pass
+
+
+async def choose_and_reserve(candidates: Iterable[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    for channel in candidates:
+        if await cooldown_remaining(str(channel["display_id"])) > 0:
+            continue
+        if await reserve_channel(channel):
+            return channel
+    return None

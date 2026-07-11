@@ -1,0 +1,831 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AI Gateway Matrix · 渠道仪表盘</title>
+<style>
+  :root {
+    --bg: #f5f5f7;
+    --card: #ffffff;
+    --text-primary: #1d1d1f;
+    --text-secondary: #6e6e73;
+    --text-tertiary: #a1a1a6;
+    --accent: #0071e3;
+    --accent-soft: rgba(0, 113, 227, 0.1);
+    --divider: rgba(0, 0, 0, 0.06);
+    --green: #30d158;
+    --amber: #ff9f0a;
+    --red: #ff3b30;
+    --purple: #af52de;
+    --teal: #30b0c7;
+    --radius-lg: 20px;
+    --radius-md: 14px;
+    --radius-sm: 10px;
+    --shadow-card: 0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.05);
+    --shadow-card-hover: 0 2px 4px rgba(0,0,0,0.05), 0 16px 32px rgba(0,0,0,0.08);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
+                 "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+  }
+
+  .page {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 48px 32px 96px;
+  }
+
+  /* ── Hero ───────────────────────────────────────── */
+  .hero {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 24px;
+    margin-bottom: 36px;
+  }
+  .hero h1 {
+    font-size: 34px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin: 0 0 6px;
+  }
+  .hero p {
+    font-size: 15px;
+    color: var(--text-secondary);
+    margin: 0;
+  }
+  .hero-stats {
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    max-width: 560px;
+  }
+  .hero-stat { text-align: right; }
+  .hero-stat .num {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+  .hero-stat .label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+  }
+
+  /* ── Tier Tabs ──────────────────────────────────── */
+  .tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 28px;
+    background: rgba(0,0,0,0.04);
+    padding: 4px;
+    border-radius: 999px;
+    width: fit-content;
+  }
+  .tab {
+    border: none;
+    background: transparent;
+    padding: 8px 20px;
+    border-radius: 999px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+  .tab.active {
+    background: var(--card);
+    color: var(--text-primary);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  }
+
+  /* ── Tier Section ───────────────────────────────── */
+  .tier-section { margin-bottom: 40px; }
+  .tier-heading {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+  .tier-dot {
+    width: 10px; height: 10px; border-radius: 50%;
+  }
+  .tier-heading h2 {
+    font-size: 20px;
+    font-weight: 700;
+    margin: 0;
+    letter-spacing: -0.01em;
+  }
+  .tier-heading .count {
+    font-size: 13px;
+    color: var(--text-tertiary);
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 16px;
+  }
+
+  /* ── Card ───────────────────────────────────────── */
+  .card {
+    background: var(--card);
+    border-radius: var(--radius-lg);
+    padding: 20px;
+    box-shadow: var(--shadow-card);
+    transition: box-shadow 0.25s ease, transform 0.25s ease;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .card:hover { box-shadow: var(--shadow-card-hover); transform: translateY(-1px); }
+
+  .card-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .card-title { min-width: 0; }
+  .card-title .name {
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .card-title .model {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 200px;
+  }
+
+  .badge {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 9px;
+    border-radius: 999px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .badge-official { background: rgba(48,209,88,0.12); color: #1c8b3d; }
+  .badge-third_party { background: rgba(0,113,227,0.1); color: #0071e3; }
+  .badge-relay { background: rgba(255,159,10,0.14); color: #b26200; }
+  .badge-observation { background: rgba(255,59,48,0.12); color: #d70015; }
+
+  .card.is-optimal {
+    box-shadow: 0 0 0 2px var(--amber), var(--shadow-card);
+  }
+  .optimal-banner {
+    background: linear-gradient(135deg, rgba(255,159,10,0.12), rgba(255,159,10,0.05));
+    border: 1px solid rgba(255,159,10,0.25);
+    border-radius: var(--radius-md);
+    padding: 12px 18px;
+    margin-bottom: 20px;
+    font-size: 13px;
+    color: #8a5a00;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .optimal-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 3px 9px;
+    border-radius: 999px;
+    background: var(--amber);
+    color: white;
+    white-space: nowrap;
+  }
+  .optimal-form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: rgba(255,159,10,0.06);
+    border-radius: var(--radius-sm);
+    padding: 10px;
+  }
+  .optimal-form input {
+    font-size: 13px;
+    border: 1px solid rgba(0,0,0,0.1);
+    border-radius: var(--radius-sm);
+    padding: 6px 10px;
+    outline: none;
+  }
+  .optimal-form input:focus { border-color: var(--amber); }
+  .btn-amber { background: var(--amber); color: white; }
+  .card-actions { display: flex; gap: 8px; }
+
+  .priority-value {
+    cursor: pointer;
+    border-bottom: 1px dashed var(--text-tertiary);
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  .priority-value:hover { color: var(--accent); border-color: var(--accent); }
+  .priority-edit-row { display: flex; gap: 6px; align-items: center; }
+  .priority-input {
+    width: 64px;
+    font-size: 13px;
+    border: 1.5px solid var(--accent);
+    border-radius: var(--radius-sm);
+    padding: 4px 8px;
+    outline: none;
+  }
+
+  .cost-block {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+    color: var(--text-secondary);
+    background: rgba(0,0,0,0.03);
+    border-radius: var(--radius-sm);
+    padding: 8px 10px;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .cost-tag {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    font-style: italic;
+  }
+
+  .ring-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .ring-wrap { position: relative; width: 64px; height: 64px; flex-shrink: 0; }
+  .ring-wrap svg { transform: rotate(-90deg); }
+  .ring-track { fill: none; stroke: rgba(0,0,0,0.06); stroke-width: 6; }
+  .ring-progress { fill: none; stroke-width: 6; stroke-linecap: round; transition: stroke-dasharray 0.6s ease, stroke 0.6s ease; }
+  .ring-center {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 700;
+  }
+
+  .usage-text { font-size: 13px; color: var(--text-secondary); line-height: 1.5; }
+  .usage-text .reset { color: var(--text-tertiary); }
+  .usage-unavailable { font-size: 13px; color: var(--text-tertiary); font-style: italic; }
+
+  .divider { height: 1px; background: var(--divider); margin: 0; }
+
+  .meta-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--text-tertiary);
+  }
+
+  .key-row { display: flex; gap: 8px; align-items: center; }
+  .key-display {
+    flex: 1;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 13px;
+    color: var(--text-secondary);
+    background: rgba(0,0,0,0.035);
+    border-radius: var(--radius-sm);
+    padding: 8px 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .key-input {
+    flex: 1;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 13px;
+    border: 1.5px solid var(--accent);
+    border-radius: var(--radius-sm);
+    padding: 7px 11px;
+    outline: none;
+  }
+  .btn {
+    border: none;
+    border-radius: var(--radius-sm);
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.15s ease, transform 0.1s ease;
+    white-space: nowrap;
+  }
+  .btn:active { transform: scale(0.96); }
+  .btn-primary { background: var(--accent); color: white; }
+  .btn-secondary { background: rgba(0,0,0,0.06); color: var(--text-primary); }
+  .btn:hover { opacity: 0.85; }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .not-configured {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  }
+  .not-configured span { font-size: 13px; color: var(--text-tertiary); }
+  .signup-link { font-size: 12px; color: var(--accent); text-decoration: none; }
+  .signup-link:hover { text-decoration: underline; }
+
+  /* ── Toast ──────────────────────────────────────── */
+  #toast {
+    position: fixed;
+    bottom: 32px;
+    left: 50%;
+    transform: translateX(-50%) translateY(20px);
+    background: rgba(29,29,31,0.92);
+    color: white;
+    padding: 14px 22px;
+    border-radius: var(--radius-md);
+    font-size: 14px;
+    max-width: 560px;
+    text-align: center;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s ease, transform 0.25s ease;
+    z-index: 100;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); pointer-events: auto; }
+
+  .empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--text-tertiary);
+    font-size: 14px;
+  }
+
+  @media (max-width: 640px) {
+    .page { padding: 32px 16px 80px; }
+    .hero { flex-direction: column; align-items: flex-start; }
+    .hero-stats { gap: 18px; }
+  }
+</style>
+</head>
+<body>
+  <div class="page">
+    <div class="hero">
+      <div>
+        <h1>渠道仪表盘</h1>
+        <p>AI Gateway Matrix · 弱/中/强三档路由 · 免费额度余量一览</p>
+      </div>
+      <div class="hero-stats" id="heroStats"></div>
+    </div>
+
+    <div class="tabs" id="tabs">
+      <button class="tab active" data-tier="全部">全部</button>
+      <button class="tab" data-tier="强">强</button>
+      <button class="tab" data-tier="中">中</button>
+      <button class="tab" data-tier="弱">弱</button>
+    </div>
+
+    <div id="optimalBanner"></div>
+
+    <div id="content"></div>
+  </div>
+
+  <div id="toast"></div>
+
+<script>
+const TIER_ORDER = ["强", "中", "弱"];
+const TIER_COLOR = { "强": "var(--purple)", "中": "var(--accent)", "弱": "var(--teal)" };
+const TIER_DESC = {
+  "强": "复杂任务（重构/架构/安全审计）— 大模型渠道",
+  "中": "常规任务的默认档位 — 通用免费渠道",
+  "弱": "简短问答/闲聊 — 超快小模型渠道",
+};
+const TRUST_LABEL = {
+  official: "官方直营",
+  third_party: "第三方托管",
+  relay: "中转站",
+  observation: "观察期 · 谨慎",
+};
+
+let channels = [];
+let activeTier = "全部";
+let tickInterval = null;
+
+function dashboardToken(forcePrompt = false) {
+  let token = forcePrompt ? "" : sessionStorage.getItem("dashboardToken");
+  if (!token) {
+    token = window.prompt("请输入 .env 中的 DASHBOARD_TOKEN（仅保存在当前浏览器会话）") || "";
+    if (token) sessionStorage.setItem("dashboardToken", token);
+  }
+  return token;
+}
+
+async function apiFetch(url, options = {}, retried = false) {
+  const token = dashboardToken(retried);
+  if (!token) throw new Error("未提供仪表盘令牌");
+  const headers = new Headers(options.headers || {});
+  headers.set("X-Dashboard-Token", token);
+  const res = await fetch(url, { ...options, headers });
+  if (res.status === 401 && !retried) {
+    sessionStorage.removeItem("dashboardToken");
+    return apiFetch(url, options, true);
+  }
+  return res;
+}
+
+function esc(value) {
+  return String(value ?? "").replace(/[&<>"']/g, ch => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  })[ch]);
+}
+
+async function fetchChannels() {
+  try {
+    const res = await apiFetch("/api/channels");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    channels = data.channels || [];
+    render();
+  } catch (e) {
+    document.getElementById("content").innerHTML =
+      `<div class="empty-state">无法连接到仪表盘后端，确认 dashboard 容器是否已启动。</div>`;
+  }
+}
+
+function fmtCountdown(seconds) {
+  if (!seconds || seconds <= 0) return null;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return m > 0 ? `${m}分${s}秒后重置` : `${s}秒后重置`;
+}
+
+function fmtExpiry(seconds) {
+  if (!seconds || seconds <= 0) return "无过期时间";
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (h > 0) return `${h}小时${m}分后失效`;
+  return `${m}分钟后失效`;
+}
+
+function ringColor(pct) {
+  if (pct >= 90) return "var(--red)";
+  if (pct >= 70) return "var(--amber)";
+  return "var(--green)";
+}
+
+function discoveryLabel(discovery) {
+  if (!discovery) return "未进行目录审计";
+  const labels = {
+    available: "✓ 上游目录可见",
+    model_missing: "⚠ 上游目录未找到模型",
+    not_configured: "未配置",
+    auth_error: "✗ 目录鉴权失败",
+    endpoint_error: "⚠ /models 不可用",
+    probe_error: "⚠ 目录审计失败",
+  };
+  return labels[discovery.status] || esc(discovery.status);
+}
+
+function renderRing(used, limit) {
+  const r = 26;
+  const c = 2 * Math.PI * r;
+  const pct = limit ? Math.min(100, Math.round((used / limit) * 100)) : 0;
+  const offset = c - (pct / 100) * c;
+  const color = ringColor(pct);
+  return `
+    <div class="ring-wrap">
+      <svg width="64" height="64" viewBox="0 0 64 64">
+        <circle class="ring-track" cx="32" cy="32" r="${r}"></circle>
+        <circle class="ring-progress" cx="32" cy="32" r="${r}"
+          stroke="${color}"
+          stroke-dasharray="${c}"
+          stroke-dashoffset="${offset}"></circle>
+      </svg>
+      <div class="ring-center">${limit ? used + "/" + limit : "—"}</div>
+    </div>`;
+}
+
+function renderCard(ch) {
+  const usage = ch.usage || {};
+  const ringHtml = ch.rpm_limit ? renderRing(usage.calls_this_minute || 0, ch.rpm_limit) : renderRing(0, 0);
+  const resetTxt = fmtCountdown(usage.seconds_until_minute_reset);
+
+  let usageBlock;
+  if (!usage.available) {
+    usageBlock = `<div class="usage-unavailable">暂无实时用量数据（未连接 Redis 或尚无调用记录）</div>`;
+  } else {
+    usageBlock = `
+      <div class="usage-text">
+        这分钟 ${usage.calls_this_minute || 0} / ${ch.rpm_limit || "—"} 次
+        ${resetTxt ? `<span class="reset"> · ${resetTxt}</span>` : ""}<br>
+        今天累计 ${usage.calls_today || 0} 次 · 成功 ${usage.successful_calls_today || 0}
+        · 失败 ${usage.failed_calls_today || 0}
+        ${usage.average_latency_ms_today != null ? `<br>今日平均延迟 ${Math.round(usage.average_latency_ms_today)} ms` : ""}
+        ${usage.last_error_class ? ` · 最近错误 ${esc(usage.last_error_class)}` : ""}
+      </div>`;
+  }
+
+  const costBlock = renderCostBlock(usage);
+
+  const keyBlock = ch.is_configured
+    ? `<div class="key-row" data-channel="${ch.channel_id}">
+         <div class="key-display">${esc(ch.masked_key || "已配置")}</div>
+         <button class="btn btn-secondary" onclick="startEdit('${ch.channel_id}')">编辑</button>
+       </div>`
+    : `<div class="not-configured" data-channel="${ch.channel_id}">
+         <span>尚未配置 API Key</span>
+         ${ch.signup_url ? `<a class="signup-link" href="${ch.signup_url}" target="_blank" rel="noopener">去申请 →</a>` : ""}
+         <button class="btn btn-primary" onclick="startEdit('${ch.channel_id}')">填写</button>
+       </div>`;
+
+  const optimalTag = ch.is_optimal
+    ? `<span class="optimal-tag">⚡ 限时优先中 · ${fmtExpiry(ch.optimal_seconds_until_expiry)}</span>`
+    : "";
+
+  const optimalAction = ch.is_optimal
+    ? `<button class="btn btn-secondary" onclick="cancelOptimal('${ch.channel_id}')">取消优先</button>`
+    : `<button class="btn btn-amber" onclick="startOptimal('${ch.channel_id}')">⚡ 标记限时优先</button>`;
+
+  return `
+    <div class="card ${ch.is_optimal ? "is-optimal" : ""}" id="card-${cssId(ch.channel_id)}">
+      <div class="card-top">
+        <div class="card-title">
+          <div class="name">${esc(ch.provider_name)}</div>
+          <div class="model">${esc(ch.model)}</div>
+        </div>
+        <span class="badge badge-${ch.trust}">${TRUST_LABEL[ch.trust] || ch.trust}</span>
+      </div>
+      ${optimalTag ? `<div>${optimalTag}${ch.optimal_reason ? ` <span class="usage-unavailable">${esc(ch.optimal_reason)}</span>` : ""}</div>` : ""}
+      <div class="ring-row">
+        ${ringHtml}
+        ${usageBlock}
+      </div>
+      ${costBlock}
+      <div class="divider"></div>
+      <div class="meta-row">
+        <span id="priority-display-${cssId(ch.channel_id)}">
+          优先级 <span class="priority-value" onclick="startPriorityEdit('${ch.channel_id}')" title="点击修改">${ch.priority ?? "—"} ✎</span>
+        </span>
+        <span>${ch.is_trusted_pool_member ? "✓ 可用于敏感内容兜底" : "不用于敏感内容兜底"}</span>
+      </div>
+      <div class="meta-row">
+        <span>${discoveryLabel(ch.discovery)}</span>
+        <span>数据政策: ${esc(ch.data_policy || "unverified")}</span>
+      </div>
+      <div id="keyblock-${cssId(ch.channel_id)}">${keyBlock}</div>
+      <div class="card-actions" id="optimalblock-${cssId(ch.channel_id)}">${optimalAction}</div>
+    </div>`;
+}
+
+function fmtMoney(v) {
+  if (v === null || v === undefined) return null;
+  if (v === 0) return "$0";
+  if (v < 0.01) return "$" + v.toFixed(6);
+  return "$" + v.toFixed(4);
+}
+
+function renderCostBlock(usage) {
+  if (!usage.available) return "";
+  const hasCostData = usage.day_cost !== null && usage.day_cost !== undefined;
+  const hasTokenData = (usage.day_tokens || 0) > 0 || (usage.total_tokens || 0) > 0;
+  if (!hasCostData && !hasTokenData) return "";
+
+  const approxPrefix = usage.cost_source === "estimated" ? "~" : "";
+  let costLine;
+  if (hasCostData) {
+    costLine = `${approxPrefix}${fmtMoney(usage.day_cost)} 今天 · ${approxPrefix}${fmtMoney(usage.total_cost)} 累计`;
+    if (usage.cost_source === "estimated") costLine += ` <span class="cost-tag">估算价</span>`;
+  } else {
+    costLine = `<span class="cost-tag">暂无定价数据</span>`;
+  }
+
+  return `
+    <div class="cost-block">
+      <span>今日 ${(usage.day_tokens || 0).toLocaleString()} tokens · 累计 ${(usage.total_tokens || 0).toLocaleString()} tokens</span>
+      <span>${costLine}</span>
+    </div>`;
+}
+
+function cssId(id) {
+  return id.replace(/[^a-zA-Z0-9]/g, "_");
+}
+
+function startPriorityEdit(channelId) {
+  const el = document.getElementById(`priority-display-${cssId(channelId)}`);
+  const ch = channels.find(c => c.channel_id === channelId);
+  el.innerHTML = `
+    <span class="priority-edit-row">
+      优先级
+      <input type="number" class="priority-input" id="priority-input-${cssId(channelId)}" value="${ch ? ch.priority : ''}" />
+      <button class="btn btn-primary" onclick="savePriority('${channelId}')">保存</button>
+    </span>`;
+  document.getElementById(`priority-input-${cssId(channelId)}`).focus();
+}
+
+async function savePriority(channelId) {
+  const input = document.getElementById(`priority-input-${cssId(channelId)}`);
+  const value = parseInt(input.value, 10);
+  if (Number.isNaN(value)) {
+    showToast("请输入一个整数");
+    return;
+  }
+  try {
+    const res = await apiFetch(`/api/channels/${encodeURIComponent(channelId)}/priority`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ priority: value }),
+    });
+    const data = await res.json();
+    showToast(data.message || data.detail || (res.ok ? "已保存" : "保存失败"));
+    if (res.ok) await fetchChannels();
+  } catch (e) {
+    showToast("网络错误，保存失败");
+  }
+}
+
+function startEdit(channelId) {
+  const el = document.getElementById(`keyblock-${cssId(channelId)}`);
+  el.innerHTML = `
+    <div class="key-row">
+      <input class="key-input" type="password" autocomplete="off" placeholder="粘贴 API Key" id="input-${cssId(channelId)}" />
+      <button class="btn btn-primary" onclick="saveKey('${channelId}')">保存</button>
+    </div>`;
+  document.getElementById(`input-${cssId(channelId)}`).focus();
+}
+
+async function saveKey(channelId) {
+  const input = document.getElementById(`input-${cssId(channelId)}`);
+  const value = input.value.trim();
+  if (!value) return;
+  try {
+    const res = await apiFetch(`/api/channels/${encodeURIComponent(channelId)}/key`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast(data.message || "已保存");
+      await fetchChannels();
+    } else {
+      showToast(data.detail || "保存失败");
+    }
+  } catch (e) {
+    showToast("网络错误，保存失败");
+  }
+}
+
+function showToast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(showToast._timer);
+  showToast._timer = setTimeout(() => t.classList.remove("show"), 5000);
+}
+
+function startOptimal(channelId) {
+  const el = document.getElementById(`optimalblock-${cssId(channelId)}`);
+  el.innerHTML = `
+    <div class="optimal-form">
+      <input type="text" placeholder="原因（比如：活动送的额度 / 试用额度7天后过期）" id="reason-${cssId(channelId)}" />
+      <input type="number" min="0" step="0.5" placeholder="多少小时后过期？留空=没有过期时间，手动取消" id="hours-${cssId(channelId)}" />
+      <div class="card-actions">
+        <button class="btn btn-amber" onclick="saveOptimal('${channelId}')">确认标记</button>
+        <button class="btn btn-secondary" onclick="render()">取消</button>
+      </div>
+    </div>`;
+}
+
+async function saveOptimal(channelId) {
+  const reason = document.getElementById(`reason-${cssId(channelId)}`).value.trim();
+  const hoursRaw = document.getElementById(`hours-${cssId(channelId)}`).value.trim();
+  const body = { reason };
+  if (hoursRaw) body.expires_in_hours = parseFloat(hoursRaw);
+  try {
+    const res = await apiFetch(`/api/channels/${encodeURIComponent(channelId)}/optimal`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    showToast(data.message || (res.ok ? "已标记" : "标记失败"));
+    if (res.ok) await fetchChannels();
+  } catch (e) {
+    showToast("网络错误，标记失败");
+  }
+}
+
+async function cancelOptimal(channelId) {
+  try {
+    const res = await apiFetch(`/api/channels/${encodeURIComponent(channelId)}/optimal`, { method: "DELETE" });
+    const data = await res.json();
+    showToast(data.message || "已取消");
+    if (res.ok) await fetchChannels();
+  } catch (e) {
+    showToast("网络错误，取消失败");
+  }
+}
+
+function renderOptimalBanner() {
+  const optimalOnes = channels.filter(c => c.is_optimal);
+  const el = document.getElementById("optimalBanner");
+  if (optimalOnes.length === 0) {
+    el.innerHTML = "";
+    return;
+  }
+  const names = optimalOnes.map(c => `${esc(c.provider_name)}（${fmtExpiry(c.optimal_seconds_until_expiry)}）`).join("、");
+  el.innerHTML = `<div class="optimal-banner">⚡ 正在优先烧额度：${names} — 除敏感内容外，所有请求都会先分给这些渠道</div>`;
+}
+
+function render() {
+  renderOptimalBanner();
+
+  const total = channels.length;
+  const configured = channels.filter(c => c.is_configured).length;
+
+  let totalTokensAlltime = 0;
+  let totalCostAlltime = 0;
+  let anyCostData = false;
+  let anyEstimated = false;
+  for (const c of channels) {
+    const u = c.usage || {};
+    totalTokensAlltime += u.total_tokens || 0;
+    if (u.total_cost !== null && u.total_cost !== undefined) {
+      totalCostAlltime += u.total_cost;
+      anyCostData = true;
+      if (u.cost_source === "estimated") anyEstimated = true;
+    }
+  }
+  const costDisplay = anyCostData
+    ? `${anyEstimated ? "~" : ""}${fmtMoney(totalCostAlltime)}`
+    : "—";
+
+  document.getElementById("heroStats").innerHTML = `
+    <div class="hero-stat"><div class="num">${configured}/${total}</div><div class="label">已配置渠道</div></div>
+    <div class="hero-stat"><div class="num">${totalTokensAlltime.toLocaleString()}</div><div class="label">累计消耗 tokens</div></div>
+    <div class="hero-stat"><div class="num">${costDisplay}</div><div class="label">预计累计花费</div></div>
+    <div class="hero-stat"><div class="num">${channels.filter(c=>c.tier==="强").length}</div><div class="label">强档</div></div>
+    <div class="hero-stat"><div class="num">${channels.filter(c=>c.tier==="中").length}</div><div class="label">中档</div></div>
+    <div class="hero-stat"><div class="num">${channels.filter(c=>c.tier==="弱").length}</div><div class="label">弱档</div></div>
+  `;
+
+  const tiers = activeTier === "全部" ? TIER_ORDER : [activeTier];
+  let html = "";
+  for (const tier of tiers) {
+    const list = channels.filter(c => c.tier === tier)
+      .sort((a,b) => (b.is_optimal - a.is_optimal) || ((b.priority||0)-(a.priority||0)));
+    if (list.length === 0) continue;
+    html += `
+      <div class="tier-section">
+        <div class="tier-heading">
+          <div class="tier-dot" style="background:${TIER_COLOR[tier]}"></div>
+          <h2>${tier}档</h2>
+          <span class="count">${TIER_DESC[tier]} · ${list.length} 个渠道</span>
+        </div>
+        <div class="grid">${list.map(renderCard).join("")}</div>
+      </div>`;
+  }
+  document.getElementById("content").innerHTML = html || `<div class="empty-state">没有匹配的渠道</div>`;
+}
+
+document.getElementById("tabs").addEventListener("click", (e) => {
+  const btn = e.target.closest(".tab");
+  if (!btn) return;
+  document.querySelectorAll(".tab").forEach(b => b.classList.remove("active"));
+  btn.classList.add("active");
+  activeTier = btn.dataset.tier;
+  render();
+});
+
+// 每 5 秒从后端拉一次真实数据；中间用本地倒计时让秒数看起来连续跳动
+function localTick() {
+  for (const ch of channels) {
+    if (ch.usage && ch.usage.seconds_until_minute_reset > 0) {
+      ch.usage.seconds_until_minute_reset -= 1;
+    }
+    if (ch.usage && ch.usage.seconds_until_day_reset > 0) {
+      ch.usage.seconds_until_day_reset -= 1;
+    }
+    if (ch.is_optimal && ch.optimal_seconds_until_expiry > 0) {
+      ch.optimal_seconds_until_expiry -= 1;
+    }
+  }
+  render();
+}
+
+fetchChannels();
+setInterval(fetchChannels, 5000);
+tickInterval = setInterval(localTick, 1000);
+</script>
+</body>
+</html>

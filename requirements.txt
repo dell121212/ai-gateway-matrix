@@ -1,0 +1,10 @@
+# AI Gateway Matrix — Python 依赖
+# 本地开发/测试用（Docker 部署时 ai-gateway-matrix 主服务镜像里已自带 litellm/redis；
+# dashboard 服务有自己独立的 dashboard/requirements.txt，不依赖这份文件）
+
+litellm[proxy]==1.91.1
+pyyaml==6.0.3
+requests==2.32.4
+# usage_tracker.py 用到；custom_router_hook.py 里已经做了 import 失败的兜底，
+# 缺这个包不会导致网关崩溃，只是仪表盘看不到用量数据
+redis==5.2.0

@@ -1,0 +1,175 @@
+# ════════════════════════════════════════════════════════════════
+#  AI Gateway Matrix — Docker Compose (v3 — 新增浏览器仪表盘)
+#
+#  v3 新增：
+#    · dashboard 服务：浏览器仪表盘，填 API Key + 看用量/重置倒计时，
+#      单独的 Dockerfile（dashboard/Dockerfile），跟主服务共用同一个 redis。
+#    · 网关核心代码统一收纳在 gateway/ Python 包中。
+#
+#  v2 修复清单（对照 Manus 验证报告）：
+#    1. [Manus 报告] Docker 启动失败（iptables raw 表缺失）——这是沙盒
+#       环境的内核限制，不是项目 bug。但在真实 Linux 主机上，以下改进
+#       能让部署更健壮：
+#    2. 新增 redis / postgres 的 healthcheck，并用 depends_on condition
+#       确保主服务在依赖就绪后才启动（原版只声明 depends_on 但不等健康）。
+#    3. 新增 PYTHONPATH=/app，确保 gateway 包能被正确 import
+#       （LiteLLM 镜像默认 WORKDIR 是 /app，但 PYTHONPATH 不一定包含它）。
+#    4. 新增 LITELLM_LOG=INFO，让日志级别可控。
+#    5. 新增 healthcheck 给主服务，方便编排工具判断状态。
+#    6. 新增 restart 策略的退避参数（默认 Docker 行为已足够，显式声明更清晰）。
+#    7. 端口绑定保持 127.0.0.1，个人用场景不对外暴露。
+# ════════════════════════════════════════════════════════════════
+
+services:
+  ai-gateway-matrix:
+    # 固定经验证的稳定版，避免 main-latest 在重启/重建时引入 Hook 破坏性变更。
+    image: ghcr.io/berriai/litellm:v1.91.1
+    container_name: ai-gateway-matrix
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4000:4000"   # 只绑定本机，个人用场景不需要对外网暴露；
+                                 # 真要远程访问的话自己把 127.0.0.1 删掉，并配合防火墙/反代加认证
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./gateway:/app/gateway:ro
+      - ./provider_manifest.yaml:/app/provider_manifest.yaml:ro
+      - ./state:/app/state:ro
+    env_file:
+      - .env
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD is required; run ./run.sh}
+      - DATABASE_URL=postgresql://litellm:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required; run ./run.sh}@postgres:5432/litellm
+      # 确保 /app 在 Python 搜索路径里，gateway 包才能被 import
+      - PYTHONPATH=/app
+      # v2 新增：日志级别（DEBUG / INFO / WARNING / ERROR）
+      - LITELLM_LOG=INFO
+      # v2 新增：关闭遥测上报（隐私 + 减少不必要的网络请求）
+      - LITELLM_TELEMETRY=False
+      - PROVIDER_DISCOVERY_OUTPUT=/app/state/provider-discovery.json
+    security_opt:
+      - no-new-privileges:true
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    # v2 新增：主服务健康检查
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:4000/health/liveliness', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  redis:
+    image: redis:7-alpine
+    container_name: ai-gateway-matrix-redis
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD is required; run ./run.sh}
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$${REDIS_PASSWORD}\""]
+    # v2 新增：健康检查
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$${REDIS_PASSWORD}\" redis-cli ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: ai-gateway-matrix-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=litellm
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required; run ./run.sh}
+      - POSTGRES_DB=litellm
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    # v2 新增：健康检查
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm -d litellm"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # v5 新增：浏览器仪表盘（渠道 API Key 填写 + 用量/重置倒计时展示）
+  # v7 更新：config.yaml 从只读改成读写——"手动设置优先级"功能需要往
+  # 里面写 priority 字段（改动都是通过 dashboard/config_editor.py 做
+  # 精确定位后的最小化文本替换，不会整个文件重写，冲突风险很低，但
+  # 如果你手动同时在别处编辑 config.yaml，请避免和仪表盘操作同时进行）。
+  # 跟 ai-gateway-matrix 主服务是两个独立容器，共用同一个 redis 做用量统计的
+  # 数据交换；只挂载它需要的那几个文件，不挂载整个项目目录，减小误改到
+  # 不该动的文件的可能性。
+  dashboard:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    container_name: ai-gateway-matrix-dashboard
+    restart: unless-stopped
+    working_dir: /app
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:8080:8080"   # 同样只绑定本机；仪表盘能改 API Key，比主服务更不该对外网暴露
+    volumes:
+      - ./config.yaml:/app/config.yaml   # 读写：优先级修改功能需要写入这个文件
+      - ./gateway:/app/gateway:ro
+      - ./provider_manifest.yaml:/app/provider_manifest.yaml:ro
+      - ./state:/app/state:ro
+      - ./.env:/app/.env            # 读写：仪表盘要往这里写你填的 key
+      - ./dashboard:/app/dashboard:ro
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD is required; run ./run.sh}
+      - PYTHONPATH=/app
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  provider-monitor:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    container_name: ai-gateway-matrix-provider-monitor
+    restart: unless-stopped
+    working_dir: /app
+    env_file:
+      - .env
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./gateway:/app/gateway:ro
+      - ./scripts:/app/scripts:ro
+      - ./state:/app/state
+    command: ["python", "-m", "scripts.provider_discovery", "--watch", "--interval", "3600", "--output", "/app/state/provider-discovery.json"]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "python", "-c", "from pathlib import Path; assert Path('/app/state/provider-discovery.json').is_file()"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+volumes:
+  redis-data:
+  postgres-data:

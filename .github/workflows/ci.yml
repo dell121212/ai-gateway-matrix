@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt -r dashboard/requirements.txt -r requirements-dev.txt
+      - run: python validate_config.py
+      - run: python -m compileall -q .
+      - run: ruff check --select E9,F63,F7,F82 .
+      - run: pytest -q
+      - run: bash -n run.sh
+      - name: Validate Docker Compose
+        env:
+          REDIS_PASSWORD: ci-redis-password
+          POSTGRES_PASSWORD: ci-postgres-password
+        run: docker compose config --quiet
