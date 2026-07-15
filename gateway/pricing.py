@@ -35,7 +35,23 @@ logger = logging.getLogger("ai_gateway_matrix.pricing")
 class PriceInfo(NamedTuple):
     input_cost_per_token: float
     output_cost_per_token: float
-    source: str  # "litellm" | "estimated"
+    source: str  # "official" | "litellm" | "estimated"
+
+
+# General Compute 官方价（2026-07-14 查询 docs.generalcompute.com/models）。
+# 该渠道是用户已充值的按量付费 API，必须优先于通用模型价格库，避免同名
+# 开源模型被误套成另一家托管商的价格。键为 General Compute 的原始 model ID。
+GENERALCOMPUTE_PRICES: dict[str, PriceInfo] = {
+    "minimax-m2.7": PriceInfo(0.40e-6, 2.34e-6, "official"),
+    "minimax-m2.5": PriceInfo(0.20e-6, 1.17e-6, "official"),
+    "deepseek-v3.2": PriceInfo(3.00e-6, 4.50e-6, "official"),
+    "deepseek-v3.1": PriceInfo(3.00e-6, 4.50e-6, "official"),
+    "deepseek-v3.1-cb": PriceInfo(0.15e-6, 0.75e-6, "official"),
+    "llama-3.3-70b": PriceInfo(0.60e-6, 1.20e-6, "official"),
+    "llama-4-maverick-17b": PriceInfo(0.63e-6, 1.80e-6, "official"),
+    "gpt-oss-120b": PriceInfo(0.21e-6, 0.79e-6, "official"),
+    "gemma-3-12b-it": PriceInfo(0.04e-6, 0.13e-6, "official"),
+}
 
 
 # 补充估算表：只收录调研过、能在第三方定价聚合站交叉核对到数字的渠道，
@@ -63,6 +79,7 @@ def compute_cost(
     response_obj: object,
     prompt_tokens: int,
     completion_tokens: int,
+    api_base: Optional[str] = None,
 ) -> tuple[Optional[float], str]:
     """计算这次调用的花费。
 
@@ -73,6 +90,19 @@ def compute_cost(
         "免费 / 暂无定价数据"，绝不能显示成 $0.00（那看起来像是"查过了、
         确实不要钱"，跟"根本没查到数据"是两回事，不能混为一谈）
     """
+    if (api_base or "").rstrip("/") == "https://api.generalcompute.com/v1":
+        upstream_model = model.removeprefix("openai/")
+        official_price = GENERALCOMPUTE_PRICES.get(upstream_model)
+        if official_price is not None:
+            cost = (
+                prompt_tokens * official_price.input_cost_per_token
+                + completion_tokens * official_price.output_cost_per_token
+            )
+            return cost, official_price.source
+        # 按量付费渠道不能套用同名模型在另一家托管商的价格。官方表尚未
+        # 收录的新模型明确显示未知，避免给出看似精确但错误的金额。
+        return None, "unknown"
+
     try:
         cost = litellm.completion_cost(completion_response=response_obj, model=model)
         if cost is not None and cost > 0:

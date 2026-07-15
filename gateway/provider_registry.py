@@ -84,6 +84,7 @@ class ProviderRegistry:
         )
         return {
             "trust": provider.get("trust", "unknown"),
+            "billing": provider.get("billing", "free_or_trial"),
             "sensitive_allowed": bool(provider.get("sensitive_allowed", defaults.get("sensitive_allowed", False))),
             "data_policy": provider.get("data_policy", defaults.get("data_policy", "unverified")),
             "capabilities": capabilities,

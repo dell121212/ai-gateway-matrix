@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>AI Gateway Matrix · 渠道仪表盘</title>
+<title>AI API 控制台 · AI Gateway Matrix</title>
 <style>
   :root {
     --bg: #f5f5f7;
@@ -30,7 +30,10 @@
 
   body {
     margin: 0;
-    background: var(--bg);
+    background:
+      radial-gradient(circle at 12% -8%, rgba(0, 113, 227, 0.12), transparent 32rem),
+      radial-gradient(circle at 92% 4%, rgba(175, 82, 222, 0.09), transparent 30rem),
+      var(--bg);
     color: var(--text-primary);
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
                  "PingFang SC", "Helvetica Neue", Arial, sans-serif;
@@ -54,9 +57,9 @@
     margin-bottom: 36px;
   }
   .hero h1 {
-    font-size: 34px;
+    font-size: 40px;
     font-weight: 700;
-    letter-spacing: -0.02em;
+    letter-spacing: -0.035em;
     margin: 0 0 6px;
   }
   .hero p {
@@ -82,12 +85,131 @@
     color: var(--text-secondary);
     margin-top: 2px;
   }
+  .eyebrow {
+    margin-bottom: 9px;
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  /* ── API 连接卡片 ──────────────────────────────── */
+  .api-panel {
+    position: relative;
+    overflow: hidden;
+    margin-bottom: 28px;
+    padding: 24px;
+    border: 1px solid rgba(255,255,255,0.72);
+    border-radius: 24px;
+    background: rgba(255,255,255,0.76);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.03), 0 18px 48px rgba(24,39,75,0.08);
+    backdrop-filter: blur(24px) saturate(150%);
+    -webkit-backdrop-filter: blur(24px) saturate(150%);
+  }
+  .api-panel::after {
+    content: "";
+    position: absolute;
+    width: 220px;
+    height: 220px;
+    right: -100px;
+    top: -135px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(0,113,227,0.12), transparent 68%);
+    pointer-events: none;
+  }
+  .api-panel-header {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 20px;
+    margin-bottom: 18px;
+  }
+  .api-panel-title { margin: 0 0 4px; font-size: 18px; letter-spacing: -0.015em; }
+  .api-panel-subtitle { margin: 0; color: var(--text-secondary); font-size: 13px; line-height: 1.5; }
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 7px 11px;
+    border-radius: 999px;
+    background: rgba(0,0,0,0.045);
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--amber); }
+  .status-pill.online { color: #1c7f3b; background: rgba(48,209,88,0.11); }
+  .status-pill.online .status-dot { background: var(--green); box-shadow: 0 0 0 4px rgba(48,209,88,0.12); }
+  .status-pill.offline { color: #c42b23; background: rgba(255,59,48,0.1); }
+  .status-pill.offline .status-dot { background: var(--red); }
+  .api-config-grid {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    grid-template-columns: 2fr 1fr 1.4fr;
+    gap: 10px;
+  }
+  .api-config-item {
+    min-width: 0;
+    padding: 13px 14px;
+    border: 1px solid var(--divider);
+    border-radius: var(--radius-md);
+    background: rgba(245,245,247,0.74);
+  }
+  .api-config-label { margin-bottom: 7px; color: var(--text-tertiary); font-size: 11px; font-weight: 600; }
+  .api-config-value-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .api-config-value {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text-primary);
+    font: 600 12px/1.4 ui-monospace, "SF Mono", Menlo, monospace;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .copy-btn {
+    flex-shrink: 0;
+    border: none;
+    border-radius: 8px;
+    padding: 5px 8px;
+    background: rgba(0,113,227,0.1);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .copy-btn:hover { background: rgba(0,113,227,0.16); }
+  .quick-steps {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 20px;
+    margin-top: 15px;
+    color: var(--text-secondary);
+    font-size: 12px;
+  }
+  .quick-step { display: inline-flex; align-items: center; gap: 7px; }
+  .step-number {
+    display: inline-grid;
+    place-items: center;
+    width: 19px;
+    height: 19px;
+    border-radius: 50%;
+    background: var(--text-primary);
+    color: white;
+    font-size: 10px;
+    font-weight: 700;
+  }
 
   /* ── Tier Tabs ──────────────────────────────────── */
   .tabs {
     display: flex;
     gap: 8px;
-    margin-bottom: 28px;
     background: rgba(0,0,0,0.04);
     padding: 4px;
     border-radius: 999px;
@@ -110,14 +232,78 @@
     box-shadow: 0 1px 3px rgba(0,0,0,0.1);
   }
 
-  /* ── Tier Section ───────────────────────────────── */
-  .tier-section { margin-bottom: 40px; }
-  .tier-heading {
+  .toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 28px;
+    flex-wrap: wrap;
+  }
+  .toolbar-actions {
     display: flex;
     align-items: center;
     gap: 10px;
+    flex: 1;
+    justify-content: flex-end;
+  }
+  .search-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: min(360px, 100%);
+    padding: 8px 13px;
+    border: 1px solid rgba(0,0,0,0.08);
+    background: var(--card);
+    border-radius: 999px;
+    color: var(--text-tertiary);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+  }
+  .search-input {
+    border: none;
+    outline: none;
+    background: transparent;
+    color: var(--text-primary);
+    font-size: 14px;
+    width: 100%;
+  }
+  .toolbar-btn {
+    border: none;
+    border-radius: 999px;
+    padding: 9px 14px;
+    background: rgba(0,0,0,0.06);
+    color: var(--text-secondary);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .toolbar-btn:hover { background: rgba(0,0,0,0.1); }
+
+  /* ── Tier Section ───────────────────────────────── */
+  .tier-section { margin-bottom: 40px; }
+  .tier-heading {
     margin-bottom: 16px;
   }
+  .tier-toggle {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    border: none;
+    padding: 0;
+    background: transparent;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .tier-toggle .chevron {
+    margin-left: auto;
+    color: var(--text-tertiary);
+    font-size: 16px;
+    transition: transform 0.18s ease;
+  }
+  .tier-toggle[aria-expanded="false"] .chevron { transform: rotate(-90deg); }
   .tier-dot {
     width: 10px; height: 10px; border-radius: 50%;
   }
@@ -170,11 +356,65 @@
     font-size: 12px;
     color: var(--text-tertiary);
     font-family: ui-monospace, "SF Mono", Menlo, monospace;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
     max-width: 200px;
   }
+  .model-view { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .model-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .model-select {
+    min-width: 0;
+    max-width: 185px;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: var(--text-tertiary);
+    font: inherit;
+    cursor: pointer;
+    text-overflow: ellipsis;
+  }
+  .model-edit-btn {
+    border: none;
+    padding: 0;
+    background: transparent;
+    color: var(--accent);
+    cursor: pointer;
+    font: inherit;
+    flex-shrink: 0;
+  }
+  .model-edit-row { display: flex; gap: 6px; margin-top: 5px; }
+  .model-input {
+    min-width: 0;
+    flex: 1;
+    border: 1.5px solid var(--accent);
+    border-radius: 7px;
+    padding: 5px 7px;
+    font: 12px ui-monospace, "SF Mono", Menlo, monospace;
+    outline: none;
+  }
+  .model-save-btn {
+    border: none;
+    border-radius: 7px;
+    padding: 5px 8px;
+    background: var(--accent);
+    color: white;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .provider-reveal {
+    display: flex;
+    justify-content: center;
+    margin-top: 14px;
+  }
+  .provider-reveal button {
+    border: none;
+    border-radius: 999px;
+    padding: 8px 15px;
+    background: rgba(0,0,0,0.05);
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .provider-reveal button:hover { background: rgba(0,0,0,0.09); }
 
   .badge {
     font-size: 11px;
@@ -188,6 +428,8 @@
   .badge-third_party { background: rgba(0,113,227,0.1); color: #0071e3; }
   .badge-relay { background: rgba(255,159,10,0.14); color: #b26200; }
   .badge-observation { background: rgba(255,59,48,0.12); color: #d70015; }
+  .badge-paid { background: rgba(175,82,222,0.12); color: #8e44ad; }
+  .badge-stack { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 
   .card.is-optimal {
     box-shadow: 0 0 0 2px var(--amber), var(--shadow-card);
@@ -374,7 +616,21 @@
   @media (max-width: 640px) {
     .page { padding: 32px 16px 80px; }
     .hero { flex-direction: column; align-items: flex-start; }
-    .hero-stats { gap: 18px; }
+    .hero h1 { font-size: 34px; }
+    .hero-stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px 12px;
+      width: 100%;
+      max-width: none;
+    }
+    .hero-stat { text-align: left; }
+    .api-panel { padding: 19px; border-radius: 20px; }
+    .api-panel-header { flex-direction: column; gap: 12px; }
+    .api-config-grid { grid-template-columns: 1fr; }
+    .toolbar { align-items: stretch; }
+    .toolbar-actions { width: 100%; justify-content: stretch; }
+    .search-wrap { min-width: 0; flex: 1; }
   }
 </style>
 </head>
@@ -382,17 +638,70 @@
   <div class="page">
     <div class="hero">
       <div>
-        <h1>渠道仪表盘</h1>
-        <p>AI Gateway Matrix · 弱/中/强三档路由 · 免费额度余量一览</p>
+        <div class="eyebrow">AI Gateway Matrix</div>
+        <h1>AI API 控制台</h1>
+        <p>一个端口，完成 API 调用、渠道配置与用量管理。</p>
       </div>
       <div class="hero-stats" id="heroStats"></div>
     </div>
 
-    <div class="tabs" id="tabs">
-      <button class="tab active" data-tier="全部">全部</button>
-      <button class="tab" data-tier="强">强</button>
-      <button class="tab" data-tier="中">中</button>
-      <button class="tab" data-tier="弱">弱</button>
+    <section class="api-panel" aria-labelledby="apiPanelTitle">
+      <div class="api-panel-header">
+        <div>
+          <h2 class="api-panel-title" id="apiPanelTitle">连接到统一 API</h2>
+          <p class="api-panel-subtitle">兼容 OpenAI SDK；网页和接口现在都使用 4000 端口。</p>
+        </div>
+        <div class="status-pill" id="gatewayStatus" role="status">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="gatewayStatusText">正在检测网关</span>
+        </div>
+      </div>
+      <div class="api-config-grid">
+        <div class="api-config-item">
+          <div class="api-config-label">API 地址（Base URL）</div>
+          <div class="api-config-value-row">
+            <code class="api-config-value" id="apiBaseValue">http://127.0.0.1:4000/v1</code>
+            <button class="copy-btn" type="button" onclick="copyValue(API_BASE, 'API 地址')">复制</button>
+          </div>
+        </div>
+        <div class="api-config-item">
+          <div class="api-config-label">推荐模型</div>
+          <div class="api-config-value-row">
+            <code class="api-config-value">auto-route</code>
+            <button class="copy-btn" type="button" onclick="copyValue('auto-route', '模型名')">复制</button>
+          </div>
+        </div>
+        <div class="api-config-item">
+          <div class="api-config-label">客户端密钥（仅显示一次）</div>
+          <div class="api-config-value-row">
+            <code class="api-config-value" id="clientKeyValue">尚未创建</code>
+            <button class="copy-btn" id="clientKeyButton" type="button"
+                    onclick="handleClientKeyButton()">创建密钥</button>
+          </div>
+        </div>
+      </div>
+      <div class="quick-steps" aria-label="快速使用步骤">
+        <span class="quick-step"><span class="step-number">1</span>在下方填写上游 Key 与模型名</span>
+        <span class="quick-step"><span class="step-number">2</span>再次运行 bash run.sh 应用</span>
+        <span class="quick-step"><span class="step-number">3</span>创建密钥并填入客户端</span>
+      </div>
+    </section>
+
+    <div class="toolbar">
+      <div class="tabs" id="tabs">
+        <button class="tab active" data-tier="全部">全部</button>
+        <button class="tab" data-tier="强">强</button>
+        <button class="tab" data-tier="中">中</button>
+        <button class="tab" data-tier="弱">弱</button>
+      </div>
+      <div class="toolbar-actions">
+        <label class="search-wrap">
+          <span aria-hidden="true">⌕</span>
+          <input id="channelSearch" class="search-input" type="search"
+                 placeholder="检索供应商或模型…" autocomplete="off" />
+        </label>
+        <button id="collapseAll" class="toolbar-btn" type="button">全部折叠</button>
+      </div>
     </div>
 
     <div id="optimalBanner"></div>
@@ -416,28 +725,84 @@ const TRUST_LABEL = {
   relay: "中转站",
   observation: "观察期 · 谨慎",
 };
+const API_BASE = `${window.location.protocol}//${window.location.hostname}:4000/v1`;
 
 let channels = [];
 let activeTier = "全部";
 let tickInterval = null;
+let searchQuery = "";
+let generatedClientKey = "";
+const collapsedTiers = new Set();
+const expandedCompanyTiers = new Set();
+const selectedProviderModels = new Map();
 
-function dashboardToken(forcePrompt = false) {
-  let token = forcePrompt ? "" : sessionStorage.getItem("dashboardToken");
-  if (!token) {
-    token = window.prompt("请输入 .env 中的 DASHBOARD_TOKEN（仅保存在当前浏览器会话）") || "";
-    if (token) sessionStorage.setItem("dashboardToken", token);
+document.getElementById("apiBaseValue").textContent = API_BASE;
+
+async function copyValue(value, label) {
+  try {
+    await navigator.clipboard.writeText(value);
+    showToast(`${label}已复制`);
+  } catch (error) {
+    showToast(`无法自动复制，请手动复制${label}`);
   }
-  return token;
+}
+
+async function handleClientKeyButton() {
+  if (generatedClientKey) {
+    await copyValue(generatedClientKey, "客户端密钥");
+    return;
+  }
+  const button = document.getElementById("clientKeyButton");
+  const value = document.getElementById("clientKeyValue");
+  button.disabled = true;
+  button.textContent = "创建中…";
+  try {
+    const response = await apiFetch("/api/client-keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const data = await response.json();
+    if (!response.ok || !data.key) throw new Error(data.detail || "创建失败");
+    generatedClientKey = data.key;
+    value.textContent = generatedClientKey;
+    value.title = `${data.alias || "客户端密钥"} · 完整密钥刷新后不再显示`;
+    button.textContent = "复制";
+    showToast(data.message || "密钥已创建，请立即复制保存");
+  } catch (error) {
+    value.textContent = "创建失败";
+    button.textContent = "重试";
+    showToast(error.message || "客户端密钥创建失败");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function checkGatewayStatus() {
+  const pill = document.getElementById("gatewayStatus");
+  const text = document.getElementById("gatewayStatusText");
+  try {
+    const response = await fetch("/health/liveliness", { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    pill.classList.add("online");
+    pill.classList.remove("offline");
+    text.textContent = "网关运行正常";
+  } catch (error) {
+    pill.classList.remove("online");
+    pill.classList.add("offline");
+    text.textContent = "网关暂不可用";
+  }
 }
 
 async function apiFetch(url, options = {}, retried = false) {
-  const token = dashboardToken(retried);
-  if (!token) throw new Error("未提供仪表盘令牌");
   const headers = new Headers(options.headers || {});
-  headers.set("X-Dashboard-Token", token);
+  const token = sessionStorage.getItem("dashboardToken");
+  if (token) headers.set("X-Dashboard-Token", token);
   const res = await fetch(url, { ...options, headers });
   if (res.status === 401 && !retried) {
-    sessionStorage.removeItem("dashboardToken");
+    const supplied = window.prompt("此仪表盘启用了远程访问保护，请输入 DASHBOARD_TOKEN") || "";
+    if (!supplied) return res;
+    sessionStorage.setItem("dashboardToken", supplied);
     return apiFetch(url, options, true);
   }
   return res;
@@ -515,7 +880,42 @@ function renderRing(used, limit) {
     </div>`;
 }
 
-function renderCard(ch) {
+function providerGroupKey(tier, providerName) {
+  return `${tier}\u0000${providerName}`;
+}
+
+function groupChannelsByProvider(list, tier) {
+  const groups = new Map();
+  for (const channel of list) {
+    const key = providerGroupKey(tier, channel.provider_name || "未命名服务商");
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(channel);
+  }
+  const result = [...groups.entries()].map(([key, items]) => ({
+    key,
+    items: items.sort(channelOrder),
+  }));
+  result.sort((a, b) => channelOrder(a.items[0], b.items[0]));
+  return result;
+}
+
+function selectedChannelForProvider(group) {
+  const wanted = selectedProviderModels.get(group.key);
+  return group.items.find(channel => channel.channel_id === wanted) || group.items[0];
+}
+
+function selectProviderModel(encodedGroupKey, channelId) {
+  selectedProviderModels.set(decodeURIComponent(encodedGroupKey), channelId);
+  render();
+}
+
+function toggleTierCompanies(tier) {
+  if (expandedCompanyTiers.has(tier)) expandedCompanyTiers.delete(tier);
+  else expandedCompanyTiers.add(tier);
+  render();
+}
+
+function renderCard(ch, providerChannels = [ch], groupKey = "") {
   const usage = ch.usage || {};
   const ringHtml = ch.rpm_limit ? renderRing(usage.calls_this_minute || 0, ch.rpm_limit) : renderRing(0, 0);
   const resetTxt = fmtCountdown(usage.seconds_until_minute_reset);
@@ -556,14 +956,34 @@ function renderCard(ch) {
     ? `<button class="btn btn-secondary" onclick="cancelOptimal('${ch.channel_id}')">取消优先</button>`
     : `<button class="btn btn-amber" onclick="startOptimal('${ch.channel_id}')">⚡ 标记限时优先</button>`;
 
+  const modelControl = providerChannels.length > 1
+    ? `<select class="model-select" aria-label="选择 ${esc(ch.provider_name)} 模型"
+               onchange="selectProviderModel('${encodeURIComponent(groupKey)}', this.value)">
+         ${providerChannels.map((candidate, index) => {
+           const duplicateCount = providerChannels.filter(item => item.model === candidate.model).length;
+           const suffix = duplicateCount > 1 ? ` · 账号 ${index + 1}` : "";
+           return `<option value="${esc(candidate.channel_id)}" ${candidate.channel_id === ch.channel_id ? "selected" : ""}>${esc(candidate.model + suffix)}</option>`;
+         }).join("")}
+       </select>`
+    : `<span class="model-text" title="${esc(ch.model)}">${esc(ch.model)}</span>`;
+
   return `
     <div class="card ${ch.is_optimal ? "is-optimal" : ""}" id="card-${cssId(ch.channel_id)}">
       <div class="card-top">
         <div class="card-title">
           <div class="name">${esc(ch.provider_name)}</div>
-          <div class="model">${esc(ch.model)}</div>
+          <div class="model" id="modelblock-${cssId(ch.channel_id)}">
+            <div class="model-view">
+              ${modelControl}
+              <button class="model-edit-btn" type="button"
+                      onclick="startModelEdit('${ch.channel_id}')" title="填写模型名称">修改</button>
+            </div>
+          </div>
         </div>
-        <span class="badge badge-${ch.trust}">${TRUST_LABEL[ch.trust] || ch.trust}</span>
+        <span class="badge-stack">
+          ${ch.billing === "paid" ? `<span class="badge badge-paid">按量付费</span>` : ""}
+          <span class="badge badge-${ch.trust}">${TRUST_LABEL[ch.trust] || ch.trust}</span>
+        </span>
       </div>
       ${optimalTag ? `<div>${optimalTag}${ch.optimal_reason ? ` <span class="usage-unavailable">${esc(ch.optimal_reason)}</span>` : ""}</div>` : ""}
       <div class="ring-row">
@@ -620,6 +1040,38 @@ function cssId(id) {
   return id.replace(/[^a-zA-Z0-9]/g, "_");
 }
 
+function matchesSearch(ch) {
+  if (!searchQuery) return true;
+  const haystack = [
+    ch.provider_name, ch.model, ch.env_var, ch.tier, ch.tier_pool,
+    ch.trust, TRUST_LABEL[ch.trust], ch.note, ch.billing,
+  ].filter(Boolean).join(" ").toLowerCase();
+  return haystack.includes(searchQuery);
+}
+
+function channelOrder(a, b) {
+  return Number(b.is_configured) - Number(a.is_configured)
+    || Number(b.is_optimal) - Number(a.is_optimal)
+    || ((b.priority || 0) - (a.priority || 0))
+    || String(a.provider_name || "").localeCompare(String(b.provider_name || ""), "zh-CN");
+}
+
+function toggleTier(tier) {
+  if (collapsedTiers.has(tier)) collapsedTiers.delete(tier);
+  else collapsedTiers.add(tier);
+  render();
+}
+
+function toggleAllTiers() {
+  const tiers = activeTier === "全部" ? TIER_ORDER : [activeTier];
+  const shouldExpand = tiers.every(tier => collapsedTiers.has(tier));
+  for (const tier of tiers) {
+    if (shouldExpand) collapsedTiers.delete(tier);
+    else collapsedTiers.add(tier);
+  }
+  render();
+}
+
 function startPriorityEdit(channelId) {
   const el = document.getElementById(`priority-display-${cssId(channelId)}`);
   const ch = channels.find(c => c.channel_id === channelId);
@@ -630,6 +1082,42 @@ function startPriorityEdit(channelId) {
       <button class="btn btn-primary" onclick="savePriority('${channelId}')">保存</button>
     </span>`;
   document.getElementById(`priority-input-${cssId(channelId)}`).focus();
+}
+
+function startModelEdit(channelId) {
+  const ch = channels.find(c => c.channel_id === channelId);
+  if (!ch) return;
+  const el = document.getElementById(`modelblock-${cssId(channelId)}`);
+  el.innerHTML = `
+    <div class="model-edit-row">
+      <input class="model-input" id="model-input-${cssId(channelId)}"
+             value="${esc(ch.model)}" placeholder="例如 openai/gpt-4o-mini" />
+      <button class="model-save-btn" type="button" onclick="saveModel('${channelId}')">保存</button>
+    </div>`;
+  const input = document.getElementById(`model-input-${cssId(channelId)}`);
+  input.focus();
+  input.select();
+}
+
+async function saveModel(channelId) {
+  const input = document.getElementById(`model-input-${cssId(channelId)}`);
+  const model = input.value.trim();
+  if (!model) {
+    showToast("请填写上游实际提供的模型名称");
+    return;
+  }
+  try {
+    const res = await apiFetch(`/api/channels/${encodeURIComponent(channelId)}/model`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model }),
+    });
+    const data = await res.json();
+    showToast(data.message || data.detail || (res.ok ? "模型名称已保存" : "保存失败"));
+    if (res.ok) await fetchChannels();
+  } catch (e) {
+    showToast("网络错误，模型名称保存失败");
+  }
 }
 
 async function savePriority(channelId) {
@@ -780,22 +1268,42 @@ function render() {
   `;
 
   const tiers = activeTier === "全部" ? TIER_ORDER : [activeTier];
+  const matchingChannels = channels.filter(matchesSearch);
   let html = "";
   for (const tier of tiers) {
-    const list = channels.filter(c => c.tier === tier)
-      .sort((a,b) => (b.is_optimal - a.is_optimal) || ((b.priority||0)-(a.priority||0)));
+    const list = matchingChannels.filter(c => c.tier === tier).sort(channelOrder);
     if (list.length === 0) continue;
+    const providerGroups = groupChannelsByProvider(list, tier);
+    const collapsed = collapsedTiers.has(tier);
+    const configuredCount = list.filter(c => c.is_configured).length;
+    const showAllCompanies = Boolean(searchQuery) || expandedCompanyTiers.has(tier);
+    const visibleGroups = showAllCompanies ? providerGroups : providerGroups.slice(0, 1);
+    const cards = visibleGroups.map(group => renderCard(
+      selectedChannelForProvider(group), group.items, group.key
+    )).join("");
+    const revealControl = !searchQuery && providerGroups.length > 1
+      ? `<div class="provider-reveal"><button type="button" onclick="toggleTierCompanies('${tier}')">
+           ${showAllCompanies ? "收起至一家" : `查看其余 ${providerGroups.length - 1} 家服务商`}
+         </button></div>`
+      : "";
     html += `
       <div class="tier-section">
         <div class="tier-heading">
-          <div class="tier-dot" style="background:${TIER_COLOR[tier]}"></div>
-          <h2>${tier}档</h2>
-          <span class="count">${TIER_DESC[tier]} · ${list.length} 个渠道</span>
+          <button class="tier-toggle" type="button" aria-expanded="${!collapsed}"
+                  onclick="toggleTier('${tier}')">
+            <span class="tier-dot" style="background:${TIER_COLOR[tier]}"></span>
+            <h2>${tier}档</h2>
+            <span class="count">${TIER_DESC[tier]} · ${providerGroups.length} 家服务商 · ${list.length} 个模型配置 · ${configuredCount} 个已配置</span>
+            <span class="chevron" aria-hidden="true">⌄</span>
+          </button>
         </div>
-        <div class="grid">${list.map(renderCard).join("")}</div>
+        ${collapsed ? "" : `<div class="grid">${cards}</div>${revealControl}`}
       </div>`;
   }
-  document.getElementById("content").innerHTML = html || `<div class="empty-state">没有匹配的渠道</div>`;
+  document.getElementById("content").innerHTML = html || `<div class="empty-state">没有匹配“${esc(searchQuery)}”的渠道</div>`;
+
+  const collapseButton = document.getElementById("collapseAll");
+  collapseButton.textContent = tiers.every(tier => collapsedTiers.has(tier)) ? "全部展开" : "全部折叠";
 }
 
 document.getElementById("tabs").addEventListener("click", (e) => {
@@ -806,6 +1314,14 @@ document.getElementById("tabs").addEventListener("click", (e) => {
   activeTier = btn.dataset.tier;
   render();
 });
+
+document.getElementById("channelSearch").addEventListener("input", (e) => {
+  searchQuery = e.target.value.trim().toLowerCase();
+  if (searchQuery) collapsedTiers.clear();
+  render();
+});
+
+document.getElementById("collapseAll").addEventListener("click", toggleAllTiers);
 
 // 每 5 秒从后端拉一次真实数据；中间用本地倒计时让秒数看起来连续跳动
 function localTick() {
@@ -824,7 +1340,9 @@ function localTick() {
 }
 
 fetchChannels();
+checkGatewayStatus();
 setInterval(fetchChannels, 5000);
+setInterval(checkGatewayStatus, 30000);
 tickInterval = setInterval(localTick, 1000);
 </script>
 </body>

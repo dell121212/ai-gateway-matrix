@@ -1,6 +1,6 @@
 # AI Gateway Matrix
 
-> 把多个免费/试用 LLM API 统一成一个 OpenAI 兼容端点，先按模态、工具调用、JSON Schema、数据政策和上下文做硬过滤，再按弱/中/强、额度、健康状态和优先级调度；自带受令牌保护的本地仪表盘。
+> 把多个免费/试用 LLM API 统一成一个 OpenAI 兼容端点，先按模态、工具调用、JSON Schema、数据政策和上下文做硬过滤，再按弱/中/强、额度、健康状态和优先级调度；自带仅本机免登录、可选令牌保护的仪表盘。
 
 ## 架构
 
@@ -9,7 +9,11 @@
          │
          ▼
    ┌───────────────────────────────────────────────┐
-   │  LiteLLM Proxy (port 4000)                    │
+   │  中文统一入口 / 透明反向代理 (host :4000)     │
+   │  HTTP 流式转发 · WebSocket · 管理界面         │
+   │                       │                        │
+   │                       ▼                        │
+   │  LiteLLM Proxy (Docker 内网 :4000)            │
    │  ┌───────────────────────────────────────┐    │
    │  │ gateway/custom_router_hook.py                  │    │
    │  │ (async_pre_call_hook)                  │    │
@@ -38,23 +42,32 @@
   Cerebras/   Agnes/中转站  Gemini Pro/   │
   SambaNova   ...          官方大模型    │
                                           ▼
-                              浏览器仪表盘 (dashboard/, :8080)
-                              填 API Key · 弱/中/强分类展示 · 用量/重置倒计时
+                              中文统一控制台 (:4000，:8080 兼容)
+                              API 透明转发 · 填 Key · 分类展示 · 用量/重置倒计时
 ```
 
 `trusted-pool` 不再由“官方直营”自动推导，只包含 `provider_manifest.yaml` 中显式设置 `sensitive_allowed: true` 的渠道。Gemini/Mistral 免费层默认需要另行审核数据条款，不进入敏感池。敏感池仍刻意不设 fallback。
 
 ## 快速开始
 
-已安装 Docker 和 Docker Compose 的情况下，可直接一键启动：
+只需先安装并启动 Docker Engine 或 Docker Desktop（需包含 Docker Compose），
+项目本身无需手工安装 Python、Redis 或 PostgreSQL 依赖。在项目目录执行：
 
 ```bash
 ./run.sh
 ```
 
-脚本会在 `.env` 不存在时从模板创建，自动生成网关、仪表盘、Redis 和 PostgreSQL 的独立随机密钥，
-执行严格配置校验，然后启动网关、仪表盘、数据库和上游模型目录审计器。上游模型 API Key 仍需要
-在 `.env` 或仪表盘中至少填写一个。
+首次运行会自动完成以下工作：
+
+- 从 `.env.example` 创建权限为 `0600` 的 `.env`；
+- 生成网关、Redis 和 PostgreSQL 的独立随机密钥；个人仪表盘默认仅本机免登录；
+- 校验配置，下载/构建所需 Docker 镜像；
+- 启动全部服务并等待健康检查通过。
+
+脚本可重复执行，不会覆盖已有 `.env` 或数据卷。上游模型 API Key 仍需要
+在 `.env` 或仪表盘中至少填写一个。升级后再次运行时，脚本会把新版
+`.env.example` 中新增的配置项补入 `.env`，但绝不覆盖已有值。如果未安装 Docker，
+脚本会给出对应安装入口。
 
 手动启动流程如下：
 
@@ -73,24 +86,25 @@ cp .env.example .env
 # 4. 检查渠道健康状态
 python3 -m scripts.health_check
 
-# 5. 打开浏览器仪表盘，填 API Key、看各渠道用量和重置倒计时
-open http://127.0.0.1:8080/    # macOS；Linux 用 xdg-open，Windows 直接浏览器打开
+# 5. 打开中文统一控制台，填 API Key、看各渠道用量和重置倒计时
+open http://127.0.0.1:4000/    # macOS；Linux 用 xdg-open，Windows 直接浏览器打开
 
 # 6. 调用网关
+# 先在控制台点击“创建密钥”，把只显示一次的客户端密钥复制到下面
 curl http://127.0.0.1:4000/v1/chat/completions \
-  -H "Authorization: Bearer $GATEWAY_MASTER_KEY" \
+  -H "Authorization: Bearer sk-你的客户端密钥" \
   -H "Content-Type: application/json" \
   -d '{"model":"auto-route","messages":[{"role":"user","content":"你好"}]}'
 ```
 
-> 通过仪表盘填了新 key 之后，记得 `docker compose restart ai-gateway-matrix`——
-> LiteLLM 的渠道列表是启动时加载的，不会自动热更新。
+> 通过仪表盘填写 Key、模型名或优先级后，再执行一次 `bash run.sh` 应用配置。
+> Docker 的普通 `restart` 不会重新读取 `.env`，因此不要用它代替启动脚本。
 
 ## 模型分组
 
 | 分组 | 档位 | 用途 | 渠道 |
 |------|------|------|------|
-| `auto-route` | — | **统一入口**，由 hook 按分类结果自动改写 | (安全默认值：GLM) |
+| `auto-route` | — | **统一入口**，由 hook 按分类结果自动改写 | 无固定上游；未配置渠道时明确拒绝 |
 | `fast-pool` | 弱 | 简短问候/单行提问 | Groq, Cerebras, SambaNova（超快推理） |
 | `free-pool` | 中 | 常规任务的默认档位 | GLM-4.7-Flash, Mistral×2, Gemini, SiliconFlow, 国内官方免费层, Agnes AI(观察期), 中转站(兜底)… |
 | `strong-model-pool` | 强 | 复杂任务（重构/架构/安全审计…） | SambaNova 405B, Gemini 2.5 Pro, DeepSeek R1… |
@@ -133,7 +147,8 @@ curl http://127.0.0.1:4000/v1/chat/completions \
 | `gateway/optimal_channels.py` | "限时优先"标记的存储与选择逻辑（基于 Redis，支持自动过期） |
 | `provider_manifest.yaml` | 凭据信任等级、敏感数据政策、模型能力和多维额度的机器可读源 |
 | `gateway/provider_registry.py` | 将 manifest 与 LiteLLM deployment 合并成运行时调度注册表 |
-| `gateway/quota_manager.py` | Redis Lua 原子预占、凭据共享限额和被动熔断 |
+| `gateway/quota_manager.py` | Redis Lua 原子预占、凭据共享限额和被动熔断；付费渠道故障时 fail-closed |
+| `gateway/runtime_launcher.py` | 启动时剔除空凭据 deployment，并把前端优先级转换成 LiteLLM `order` |
 | `scripts/provider_discovery.py` | 定时审计 OpenAI-compatible 上游 `/models` 目录，不自动篡改配置 |
 | `scripts/validate_config.py` | 严格 YAML、派生 direct、manifest、env 引用与 fallback 无环校验 |
 | `gateway/pricing.py` | 单价查询：先查 litellm 内置价格库，查不到用小估算表兜底，都查不到就诚实返回"未知" |
@@ -141,7 +156,7 @@ curl http://127.0.0.1:4000/v1/chat/completions \
 | `dashboard/` | 浏览器仪表盘（FastAPI 后端 + 静态前端），填 API Key、看用量、弱/中/强分类展示 |
 | `docker-compose.yml` | Docker 编排：LiteLLM + Redis + Postgres + Dashboard |
 | `scripts/test_gateway.py` | 本地体检脚本（不接真实 API，分类器全程 mock 掉） |
-| `scripts/health_check.py` | 渠道健康检查 & 状态查询 |
+| `scripts/health_check.py` | 默认无消耗存活检查；显式 `--probe-upstreams` 才探测真实渠道 |
 | `scripts/quickstart.py` | 快速启动向导 |
 | `scripts/create_client_key.py` | 创建限模型/限 RPM/TPM/限 IP 的 LiteLLM 虚拟客户端 Key |
 | `backup.sh` | 备份 PostgreSQL、Redis 和非密钥配置 |
@@ -211,7 +226,7 @@ curl http://127.0.0.1:4000/v1/chat/completions \
 
 ## 手动设置优先级
 
-每张渠道卡片上"优先级 N"的数字可以直接点击修改，保存后写入 `config.yaml`（需要重启 `ai-gateway-matrix` 容器生效，跟改 API Key 是同一个套路，不假装能热更新）。
+每张渠道卡片上"优先级 N"的数字可以直接点击修改，保存后写入 `config.yaml`；再次执行 `bash run.sh` 后生效。
 
 技术上只会去改这个渠道在它所属档位（fast/free/strong-pool）里的"主条目"：
 
@@ -225,24 +240,32 @@ curl http://127.0.0.1:4000/v1/chat/completions \
 
 单价怎么来的，按你的要求"先通过 API 查询，查不到再估算"，具体是三层顺序（`gateway/pricing.py`）：
 
-1. **优先查 `litellm.completion_cost()`**——LiteLLM 自带、社区持续维护更新的价格库（`model_prices_and_context_window.json`），覆盖了大部分主流模型的官方定价。这是本地能拿到的最权威、更新最及时的数据源。
-2. **查不到，退回一个很小的估算表**（目前只收录了 Together AI / Fireworks / DeepInfra 这几个 litellm 价格库覆盖不到的具体部署名）。这几个数字是从公开定价对比文章交叉核对后取的中位数，标了大致时间，**不是实时价格**，只用来给你一个数量级参考，真金白银决策请去对应渠道官网确认当前价格。
-3. **两边都查不到**（大部分官方免费渠道——它们的免费层是真免费，不是打折，压根没有一个"正常价格"）：显示"暂无定价数据"，**绝不会显示成 `$0.00`**——那看起来像是"查过了确实不要钱"，跟"根本没查到数据"是完全不同的两件事，混为一谈会误导你的判断。
+1. **General Compute 先查单独维护的官方价表**——这是已充值的按量付费渠道；未知模型明确显示“未知”，不会套用另一家托管商的同名模型价格。
+2. **其他渠道查 `litellm.completion_cost()`**——LiteLLM 自带、社区持续维护更新的价格库（`model_prices_and_context_window.json`），覆盖了大部分主流模型的官方定价。
+3. **查不到，退回一个很小的估算表**（目前只收录 Together AI / Fireworks / DeepInfra 的已核对部署名）；估算只用于数量级参考。
+4. **仍查不到**：显示“暂无定价数据”，绝不会把未知伪装成 `$0.00`。
 
 如果你把自己的付费 API（比如自己的 OpenAI/Anthropic key）也接进来，只要 litellm 价格库里有这个模型，费用会被精确计算并显示；金额前面如果带"~"，代表这笔钱是用第 2 层的估算表算出来的，不是精确值。
 
 ## 浏览器仪表盘
 
-`docker-compose up -d` 之后访问 `http://127.0.0.1:8080/`：
+`docker compose up -d` 之后访问 `http://127.0.0.1:4000/`。这是中文统一入口：
+浏览器打开时显示控制台，OpenAI 兼容接口继续使用
+`http://127.0.0.1:4000/v1`。旧地址 `http://127.0.0.1:8080/` 暂时保留兼容，
+显示的是同一个界面。
 
-首次打开会询问 `.env` 中的 `DASHBOARD_TOKEN`，令牌只保存在当前浏览器会话。管理 API 不开启跨域访问。
+个人自用默认启用 `DASHBOARD_AUTH=local`：仪表盘只监听 `127.0.0.1`，打开网页即可管理，不需要再输入第二个令牌。管理 API 会拒绝浏览器跨站请求，也不开放 CORS。如果以后要把仪表盘开放到局域网，请先把 `.env` 改为 `DASHBOARD_AUTH=token`，重启后使用独立的 `DASHBOARD_TOKEN` 登录。
 
 - 按 弱/中/强 三档分类展示所有渠道，每个渠道一张卡片
+- 支持按供应商、模型、环境变量和档位即时检索；每个档位可折叠，已配置渠道自动前置
+- 每档默认只展示一家服务商；展开后每家公司仍只占一张卡，同公司的多个模型用下拉框切换
+- 渠道卡片中的上游模型名称可由用户直接填写，不把初始目录中的模型 ID 锁死为内置值
 - 圆环展示这分钟用了几次/RPM 上限，颜色随用量比例从绿变黄变红
 - 显示今天累计调用次数、多久后重置（数据来自 Redis，`gateway/custom_router_hook.py` 每次请求成功/失败都会记一笔）
 - 显示成功/失败数、平均延迟、最近错误类型和上游模型目录审计状态
 - 信任等级徽章：官方直营 / 第三方托管 / 中转站 / 观察期·谨慎（Agnes AI 目前是唯一的"观察期"渠道）
-- 直接在卡片里填 API Key，保存到 `.env`（**改完需要 `docker compose restart ai-gateway-matrix` 才生效**，仪表盘不会假装自己能热更新 LiteLLM 的渠道列表）
+- 直接在卡片里填写 API Key 和上游模型名；保存后再次执行 `bash run.sh`，由脚本重新加载 `.env` 与路由配置
+- 控制台可一键创建仅授权 `auto-route` 的客户端密钥，主密钥不会发送到浏览器；新密钥只在创建时完整显示一次
 
 跟 LiteLLM 自带的 Admin UI（`/ui`，按花费/请求数展示）不是一回事：那个是"花了多少钱"视角，对这批 `max_budget: 0.01` 的免费渠道意义不大；这个仪表盘是"还剩多少次调用/什么时候重置"视角，两者互补。
 
@@ -254,13 +277,14 @@ curl http://127.0.0.1:4000/v1/chat/completions \
 ## 已知限制
 
 - **普通池内调度**：能力直连/限时优先已使用 Redis Lua 做凭据级原子预占；纯文本的普通池内选择仍由 LiteLLM Router 负责，需要结合真实账号限额压测。
+- **空凭据与优先级**：源配置保留完整渠道目录供编辑；每次 `bash run.sh` 都会生成仅含已配置渠道的运行时配置，优先级越高越先尝试。快速/中档可以向上借用强档，强档不会向下静默降级。
 - **外部分类器默认关闭**：只有显式填写 `CLASSIFIER_API_KEY` 才会产生额外网络调用；限流或失败会回退本地规则。
 - **Docker iptables**：在某些沙盒环境（如 Manus 验证环境）中，iptables `raw` 表缺失会导致 Docker 网络初始化失败。这是环境问题，不是项目 bug。在正常 Linux 主机上不受影响。
 - **Redis/Postgres 连接**：需要 Docker 启动后才能验证。`scripts/health_check.py` 可以帮助确认连接状态；Redis 同时也是仪表盘用量统计的数据来源，不通的话仪表盘会显示"暂无数据"而不是报错。
 - **多账号 ToS 风险**：Mistral 用两个账号叠加免费额度这件事，大概率违反 Mistral 的服务条款（多数厂商都禁止"创建多个账号规避速率限制"）。这是个人白嫖习惯，请不要直接搬进有真实业务负载的项目里。
 - **Agnes AI 是观察期渠道**：上线约一个月，缺乏第三方审计/长期口碑积累，其"Claw-Eval"评测榜单是自建/关联站点。已确保它不会处理敏感内容或强档任务，但仍建议定期关注它的条款变化。
 - **限时优先依赖 Redis**：Redis 不可用时"限时优先"标记形同虚设（会静默失败/返回空），请求会退回正常的弱/中/强路由，不会报错，但也不会像预期那样优先烧额度——建议定期看一眼仪表盘顶部的横幅，确认标记确实生效了。
-- **目录审计不等于真实 completion**：`provider-monitor` 主动检查 `/models`，被动失败会触发熔断；为了不耗尽低 RPD 免费额度，默认不对 105 个派生 deployment 定时发送真实 completion。
+- **目录审计不等于真实 completion**：`provider-monitor` 主动检查 `/models`，被动失败会触发熔断；为了不耗尽低 RPD 免费额度，默认不对 102 个 deployment 定时发送真实 completion。
 - **非聊天端点**：LiteLLM Proxy 仍提供其版本支持的 OpenAI-compatible 端点，但本项目的自动能力路由目前只覆盖聊天请求；尚未配置 embedding、图片生成和语音模型，因此不会伪造这些能力。
 - **响应缓存默认关闭**：避免跨客户端复用含敏感数据的响应；如要启用，应先确定租户隔离、缓存键和数据保留政策。
 - **密钥静态存储**：`.env` 会被限制为 `0600` 且不会进入备份，但仍是宿主机明文文件。生产环境应接入 Docker/Kubernetes secrets 或云端密钥管理服务。
@@ -281,7 +305,7 @@ curl http://127.0.0.1:4000/v1/chat/completions \
 
 - 新增 `gateway/channel_ids.py`：共享的渠道标识生成函数（`make_display_id` / `make_direct_model_name`），config.yaml 生成脚本、`gateway/custom_router_hook.py`、`dashboard/channel_loader.py` 三边共用，保证算出来的 id 一致。
 - 新增 `gateway/optimal_channels.py`：基于 Redis 的"限时优先"标记存储，支持可选过期时间（用 Redis TTL 实现自动失效），按最快过期排序。
-- `config.yaml` 新增 42 个 `direct-xxxxxxxxxx` 分组（每个只含 1 个 deployment），给"限时优先"功能做精确寻址用；已有 YAML 锚点的渠道直接复用，没有的补全了锚点。
+- `config.yaml` 包含 43 个 `direct-xxxxxxxxxx` 分组（每个只含 1 个 deployment），给"限时优先"功能做精确寻址用；已有 YAML 锚点的渠道直接复用，没有的保留同步副本。
 - `gateway/custom_router_hook.py`：启动时解析 config.yaml 建立渠道注册表；`decide_pool_with_classifier()` 新增"限时优先"检查，优先级在敏感内容检测之后、关键词升级判断之前。
 - 仪表盘新增标记/取消限时优先的按钮、⚡ 徽章、顶部横幅提示。
 - 顺手修了一个真实 bug：`dashboard/backend.py` 查询用量时之前传的是 `channel_id`（展示用的稳定主键）而不是 `usage_key`（哈希后、跟 hook 记录用量时一致的那个），会导致仪表盘永远查不到用量数据。
@@ -290,7 +314,7 @@ curl http://127.0.0.1:4000/v1/chat/completions \
 
 ## v7 变更记录（手动优先级 + token/金额统计）
 
-- 新增 `dashboard/config_editor.py`：安全地在 config.yaml 里定位单个渠道的 litellm_params 块并修改 priority 字段，只在能唯一定位到目标时才动手，改完需要重启网关容器生效。
+- 新增 `dashboard/config_editor.py`：安全定位并修改渠道的 priority/model 字段，只在能唯一定位到目标时才动手，改完再次执行 `bash run.sh` 生效。
 - 新增 `gateway/pricing.py`：三层定价查询（litellm 内置价格库 → 小估算表 → 诚实返回"未知"），`compute_cost()` 直接对接 `litellm.completion_cost()`。
 - `gateway/usage_tracker.py` 扩展：新增 day/total 两套 token 和金额累加计数器（`incrby`/`incrbyfloat`）；今天的窗口自动重置，累计键在渠道持续活跃时续期，停用 400 天后清理（可用 `USAGE_TOTAL_RETENTION_DAYS` 调整）。
 - `gateway/custom_router_hook.py` 的 `async_log_success_event` 现在会顺手提取 token 用量、调用 `pricing.compute_cost()`，一起记进 `usage_tracker`。
@@ -315,12 +339,21 @@ python3 -m scripts.create_client_key --name codex-laptop --models auto-route --r
 
 ## v8 变更记录（调度正确性与安全加固）
 
-- Dashboard API 加入独立令牌，移除全开放 CORS，增加 CSP/防 iframe/输入范围校验和加锁安全写入。
+- Dashboard API 默认采用仅本机免登录模式，可选独立令牌保护；不开放 CORS，并保留 CSP、防 iframe、跨站拦截、输入范围校验和加锁安全写入。
 - LiteLLM 固定到 `v1.91.1`，Redis/PostgreSQL/Dashboard 密码由 `run.sh` 独立生成，Redis 开启密码。
 - 新增 `provider_manifest.yaml` / `gateway/provider_registry.py`，路由前强制校验能力和敏感数据政策。
 - 新增 Redis Lua 原子额度预占、凭据级共享限额、错误分类熔断和成功自动恢复。
 - 分类器不再隐式消耗业务 Groq Key；长上下文硬约束先于分类器。
 - 敏感检测扩展到 tool arguments，上游异常原文不再记录。
+
+## v9 变更记录（统一入口与逆向回归修复）
+
+- 宿主 `4000` 由中文控制台统一接入，完整转发 LiteLLM HTTP、流式请求/响应和 WebSocket；`8080` 保留兼容入口。
+- 启动时动态过滤空 API Key，避免 Router 随机选中未配置 deployment；将界面 `priority` 映射到 LiteLLM 官方 `order`。
+- 默认健康检查改用 `/health/liveliness`，不探测模型、不消耗 General Compute 等付费额度；真实探测必须显式传 `--probe-upstreams`。
+- General Compute 标记为付费渠道：Redis 额度账本不可用时拒绝放行，未知模型不再套用通用价格。
+- Dashboard 默认本机免登录，快速向导不再要求 `DASHBOARD_TOKEN`；只有切换到 `DASHBOARD_AUTH=token` 才需要令牌。
+- 更新 Requests 安全修复版本，补回 CI、Dashboard 依赖更新检查、启动脚本回归和前端检索/折叠测试。
 - 新增上游 `/models` 定期审计、成功/失败/延迟观测、严格配置验证、CI、Dependabot 与回归测试。
 
 ## 参考

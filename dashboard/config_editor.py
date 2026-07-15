@@ -3,19 +3,19 @@
 """
 config.yaml 编辑工具 (v1)
 ————————————————————————————————————————
-按你的要求："不同档位可以手动设置优先级"。
+按你的要求：允许从仪表盘修改渠道优先级和上游模型名称。
 
 设计取舍：
-  · 跟改 API Key 一样的哲学——直接改 config.yaml 的文本，需要重启
-    ai-gateway-matrix 容器才生效，不假装能热更新 LiteLLM Router 内部
+  · 跟改 API Key 一样的哲学——直接改 config.yaml 的文本，需要再次执行
+    bash run.sh 才生效，不假装能热更新 LiteLLM Router 内部
     已经加载好的 deployment 优先级（那需要伸手改 Router 的内存状态，
     这类未公开支持的内部实现细节，版本一换就可能出问题，不划算）。
-  · 只改这个渠道在 fast-pool/free-pool/strong-model-pool 里的"主条目"，
-    不碰 trusted-pool/direct-xxxxxxxxxx 里的副本：
+  · 优先级只改主条目和必要的无锚点 direct 副本；模型名称会同步主条目
+    与 direct-xxxxxxxxxx 分组名/参数：
       - 如果这个渠道本来就有 YAML 锚点（官方直营渠道基本都有），
         主条目就是锚点定义本身，改了这里，trusted-pool/direct- 里用
         `*anchor_name` 引用它的地方会在下次解析时自动跟着变，不用
-        额外处理。
+        额外修改参数副本，但 direct 分组名仍会按新模型重新计算。
       - 如果没有锚点（大部分第三方托管/中转站渠道），trusted-pool 里
         本来就没有这个渠道（设计上就不该有），direct- 分组里那份完整
         复制的 priority 字段本身也不影响任何实际路由行为——那个分组
@@ -40,6 +40,37 @@ from gateway import channel_ids
 from .safe_files import locked_file, safe_rewrite
 
 _MODEL_NAME_SPLIT_RE = re.compile(r"(?=^  - model_name:)", re.M)
+_UPSTREAM_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+~-]{0,299}$")
+
+
+def _matching_primary_parts(
+    parts: list[str],
+    pool: str,
+    model: str,
+    api_base: Optional[str],
+    env_var: Optional[str],
+) -> list[int]:
+    matches = []
+    for i, part in enumerate(parts):
+        m_pool = re.match(r"  - model_name:\s*(\S+)", part)
+        if not m_pool or m_pool.group(1) != pool:
+            continue
+
+        m_model = re.search(r"^\s*model:\s*(\S+)\s*$", part, re.M)
+        if not m_model or m_model.group(1) != model:
+            continue
+
+        m_api_base = re.search(r"^\s*api_base:\s*(\S+)\s*$", part, re.M)
+        found_api_base = m_api_base.group(1) if m_api_base else None
+        if found_api_base != (api_base or None):
+            continue
+
+        m_key = re.search(r"^\s*api_key:\s*os\.environ/(\S+)\s*$", part, re.M)
+        found_env = m_key.group(1) if m_key else None
+        if found_env != env_var:
+            continue
+        matches.append(i)
+    return matches
 
 
 def update_priority(
@@ -59,6 +90,83 @@ def update_priority(
         return _update_priority_locked(
             config_path, pool, model, api_base, env_var, new_priority
         )
+
+
+def update_model(
+    config_path: Path,
+    pool: str,
+    model: str,
+    api_base: Optional[str],
+    env_var: Optional[str],
+    new_model: str,
+) -> bool:
+    """修改一个主 deployment 的上游模型名，并同步它的 direct 分组。"""
+    new_model = new_model.strip()
+    if not _UPSTREAM_MODEL_RE.fullmatch(new_model):
+        raise ValueError("模型名称只能包含字母、数字以及 . _ : / @ + ~ -，最长 300 字符")
+    if new_model == model:
+        return True
+
+    with locked_file(config_path):
+        text = config_path.read_text(encoding="utf-8")
+        parts = _MODEL_NAME_SPLIT_RE.split(text)
+        matches = _matching_primary_parts(parts, pool, model, api_base, env_var)
+        if len(matches) != 1:
+            return False
+
+        old_direct = channel_ids.make_direct_model_name(model, api_base, env_var)
+        new_direct = channel_ids.make_direct_model_name(new_model, api_base, env_var)
+        direct_matches = [
+            i for i, part in enumerate(parts)
+            if re.match(rf"  - model_name:\s*{re.escape(old_direct)}(?:\s|$)", part)
+        ]
+        if len(direct_matches) != 1:
+            return False
+        if any(
+            i != direct_matches[0]
+            and re.match(rf"  - model_name:\s*{re.escape(new_direct)}(?:\s|$)", part)
+            for i, part in enumerate(parts)
+        ):
+            raise ValueError("修改后的模型与现有渠道生成了重复的直连标识")
+
+        primary_idx = matches[0]
+        parts[primary_idx] = re.sub(
+            rf"(^\s*model:\s*){re.escape(model)}\s*$",
+            rf"\g<1>{new_model}",
+            parts[primary_idx],
+            count=1,
+            flags=re.M,
+        )
+
+        direct_idx = direct_matches[0]
+        direct_block = re.sub(
+            rf"(^  - model_name:\s*){re.escape(old_direct)}(?=\s|$)",
+            rf"\g<1>{new_direct}",
+            parts[direct_idx],
+            count=1,
+            flags=re.M,
+        )
+        # 无锚点 direct 块包含完整参数副本，需要同步实际 model；有锚点时
+        # 参数会自动继承主条目，只更新 direct 分组名即可。
+        if "litellm_params: *" not in direct_block:
+            direct_block = re.sub(
+                rf"(^\s*model:\s*){re.escape(model)}\s*$",
+                rf"\g<1>{new_model}",
+                direct_block,
+                count=1,
+                flags=re.M,
+            )
+        # 同步行尾说明，便于人工检查；它不参与 YAML 语义。
+        direct_block = direct_block.replace(f"# {model}", f"# {new_model}", 1)
+        parts[direct_idx] = direct_block
+
+        safe_rewrite(
+            config_path,
+            "".join(parts),
+            mode=0o640,
+            validator=_validate_yaml,
+        )
+        return True
 
 
 def _validate_yaml(path: Path) -> None:
@@ -95,27 +203,7 @@ def _update_priority_locked(
     text = config_path.read_text(encoding="utf-8")
     parts = _MODEL_NAME_SPLIT_RE.split(text)
 
-    matches = []
-    for i, part in enumerate(parts):
-        m_pool = re.match(r"  - model_name:\s*(\S+)", part)
-        if not m_pool or m_pool.group(1) != pool:
-            continue
-
-        m_model = re.search(r"^\s*model:\s*(\S+)\s*$", part, re.M)
-        if not m_model or m_model.group(1) != model:
-            continue
-
-        m_api_base = re.search(r"^\s*api_base:\s*(\S+)\s*$", part, re.M)
-        found_api_base = m_api_base.group(1) if m_api_base else None
-        if found_api_base != (api_base or None):
-            continue
-
-        m_key = re.search(r"^\s*api_key:\s*os\.environ/(\S+)\s*$", part, re.M)
-        found_env = m_key.group(1) if m_key else None
-        if found_env != env_var:
-            continue
-
-        matches.append(i)
+    matches = _matching_primary_parts(parts, pool, model, api_base, env_var)
 
     if len(matches) != 1:
         return False

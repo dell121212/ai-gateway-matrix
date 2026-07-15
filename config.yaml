@@ -276,6 +276,17 @@ model_list:
   #  SambaNova 405B / Gemini 2.5 Pro / DeepSeek R1
   # ════════════════════════════════════════════════════════════════
 
+  # --- General Compute（已充值，按量付费）---
+  # 官方 API 为 OpenAI-compatible；这里使用官方默认模型作为初始值。
+  # 实际模型名称由用户在仪表盘卡片中按账户当前可用模型自行填写。
+  - model_name: strong-model-pool
+    litellm_params: &generalcompute_paid
+      model: openai/gpt-oss-120b
+      api_base: https://api.generalcompute.com/v1
+      api_key: os.environ/GENERALCOMPUTE_API_KEY
+      priority: 95
+      max_input_tokens: 128000
+
   # --- SambaNova: Llama 3.1 405B (唯一免费的 405B 模型) [官方直营] ---
   - model_name: strong-model-pool
     litellm_params: &sambanova_405b
@@ -745,6 +756,8 @@ model_list:
     litellm_params: *sambanova_70b
   - model_name: direct-afc9e6245f  # gemini/gemini-2.5-pro
     litellm_params: *gemini_25_pro
+  - model_name: direct-93896b99f3  # openai/gpt-oss-120b @ https://api.generalcompute.com/v1
+    litellm_params: *generalcompute_paid
   - model_name: direct-695045bbeb  # groq/openai/gpt-oss-120b
     litellm_params: *groq_kimi_k2
   - model_name: direct-4d1c80d3b5  # openai/deepseek-ai/DeepSeek-R1 @ https://api.siliconflow.cn/v1
@@ -941,7 +954,7 @@ general_settings:
   master_key: os.environ/GATEWAY_MASTER_KEY
   database_url: os.environ/DATABASE_URL
   disable_telemetry: true
-  # 免费渠道的 RPD 很低，对 105 个（含 direct/trusted 派生副本）deployment
+  # 免费渠道的 RPD 很低，对完整目录（含 direct/trusted 派生副本）的 deployment
   # 做 completion 式后台健康检查会本末倒置地耗尽免费额度。默认改用：
   # provider-monitor 的 /models 目录审计 + Router 被动熔断 + 手动 scripts/health_check.py。
   background_health_checks: false

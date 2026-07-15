@@ -45,6 +45,9 @@ docker-compose.override.yml
 *.log
 logs/
 
+# 运行时生成的上游模型目录审计结果
+state/*.json
+
 # OS
 .DS_Store
 Thumbs.db

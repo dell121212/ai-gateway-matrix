@@ -9,19 +9,13 @@ from pathlib import Path
 
 import requests
 
+from gateway import env_file
+
 
 def load_env() -> None:
     path = Path(__file__).resolve().parents[1] / ".env"
-    if not path.exists():
-        return
-    for line in path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#") and "=" in stripped:
-            key, value = stripped.split("=", 1)
-            value = value.strip()
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-                value = value[1:-1]
-            os.environ.setdefault(key.strip(), value)
+    for key, value in env_file.read_env(path).items():
+        os.environ.setdefault(key, value)
 
 
 def main() -> int:
@@ -56,16 +50,24 @@ def main() -> int:
     if args.allowed_ip:
         payload["allowed_ips"] = args.allowed_ip
 
-    response = requests.post(
-        f"{base_url}/key/generate",
-        headers={"Authorization": f"Bearer {master_key}"},
-        json=payload,
-        timeout=15,
-    )
+    try:
+        response = requests.post(
+            f"{base_url}/key/generate",
+            headers={"Authorization": f"Bearer {master_key}"},
+            json=payload,
+            timeout=15,
+        )
+    except requests.RequestException as exc:
+        print(f"创建失败: 无法连接网关（{type(exc).__name__}）")
+        return 1
     if response.status_code >= 400:
         print(f"创建失败: HTTP {response.status_code} {response.text[:300]}")
         return 1
-    body = response.json()
+    try:
+        body = response.json()
+    except requests.exceptions.JSONDecodeError:
+        print(f"创建失败: 网关返回了非 JSON 响应 {response.text[:300]}")
+        return 1
     key = body.get("key")
     if not key:
         print("创建失败: 响应中没有 key")

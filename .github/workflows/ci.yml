@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: pip install -r requirements.txt -r dashboard/requirements.txt -r requirements-dev.txt
+      - run: python -m scripts.validate_config
+      - run: python -m compileall -q dashboard gateway scripts tests
+      - run: ruff check --select E9,F63,F7,F82 .
+      - run: pytest -q
+      - run: node tests/dashboard_frontend_logic.mjs
+      - run: bash -n run.sh
+      - name: Validate Docker Compose
+        env:
+          GATEWAY_MASTER_KEY: sk-ci-only-placeholder
+          DASHBOARD_AUTH: local
+          REDIS_PASSWORD: ci-redis-password
+          POSTGRES_PASSWORD: ci-postgres-password
+        run: docker compose config --quiet

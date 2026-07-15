@@ -9,7 +9,7 @@
 |------|------|------|------|--------|
 | `fast-pool` | 弱 | 超短输入 + 简单任务 | Groq/Cerebras/SambaNova 超快推理（500-2000 tokens/sec） | 5 |
 | `free-pool` | 中 | 常规任务 | GLM/Gemini/SiliconFlow/Agnes AI(观察期)/国内官方/聚合站 | 23 |
-| `strong-model-pool` | 强 | 复杂任务 | Llama 405B/Gemini Pro/DeepSeek R1/Llama 70B/NVIDIA NIM（**不含 Agnes AI**——观察期渠道不承接复杂/敏感任务） | 14 |
+| `strong-model-pool` | 强 | 复杂任务 | General Compute 付费 API/Llama 405B/Gemini Pro/DeepSeek R1/Llama 70B/NVIDIA NIM（**不含 Agnes AI**） | 15 |
 | `trusted-pool` | — | 敏感内容专用 | 只含 `provider_manifest.yaml` 显式允许敏感数据的官方渠道 | 15（复用，非独立配置） |
 
 ## 渠道分类总览（58 个 deployment，含 trusted-pool 复用条目，不含派生 direct 分组）
@@ -47,6 +47,12 @@
 | Fireworks AI | 试用额度 | 快速推理 |
 | Lepton AI | 试用额度 | 自定义模型 |
 | DeepSeek | 试用额度 | 国产强模型 |
+
+### 付费渠道
+
+| 渠道 | 计费 | 备注 |
+|------|------|------|
+| General Compute | 按输入/输出 token 计费 | 已充值，归入强档；模型 ID 由用户在仪表盘按账户实际可用项填写 |
 
 ### Tier 4: 聚合/中转站（兜底）
 | 渠道 | 免费额度 | 备注 |

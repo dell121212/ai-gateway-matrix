@@ -18,12 +18,18 @@
 
 from __future__ import annotations
 
+import importlib
+import os
 import secrets
 import subprocess
 import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+env_utils = importlib.import_module("gateway.env_file")
 
 GREEN = "\033[92m"
 RED = "\033[91m"
@@ -59,7 +65,7 @@ def check_python():
 def check_dependencies():
     """检查依赖库。"""
     print(f"\n{BOLD}── 依赖检查 ──{RESET}")
-    deps = {"yaml": "pyyaml", "litellm": "litellm", "requests": "requests"}
+    deps = {"yaml": "pyyaml", "requests": "requests"}
     all_ok = True
     for module, pip_name in deps.items():
         try:
@@ -68,7 +74,35 @@ def check_dependencies():
         except ImportError:
             fail(f"{pip_name} 未安装 (pip install {pip_name})")
             all_ok = False
+    try:
+        __import__("litellm")
+        ok("litellm（本地测试可用）")
+    except ImportError:
+        warn("本机未安装 litellm；Docker 启动不受影响，本地网关测试会跳过")
     return all_ok
+
+
+def provider_env_names() -> set[str]:
+    """从实际配置读取渠道凭据名，避免向导内置一份很快过期的列表。"""
+    try:
+        import yaml
+
+        with (PROJECT_ROOT / "config.yaml").open(encoding="utf-8") as handle:
+            config = yaml.safe_load(handle) or {}
+    except Exception:
+        # 依赖缺失、YAML 损坏或文件不可读都会在前面的独立检查中给出提示；
+        # 这里仅用于统计可选凭据，不应让快速向导本身崩溃。
+        return set()
+    names: set[str] = set()
+    for item in config.get("model_list") or []:
+        if not isinstance(item, dict) or item.get("model_name") not in {
+            "fast-pool", "free-pool", "strong-model-pool",
+        }:
+            continue
+        api_key = (item.get("litellm_params") or {}).get("api_key")
+        if isinstance(api_key, str) and api_key.startswith("os.environ/"):
+            names.add(api_key.split("/", 1)[1])
+    return names
 
 
 def check_env():
@@ -82,26 +116,17 @@ def check_env():
             warn(".env 不存在，从 .env.example 复制中...")
             import shutil
             shutil.copy(env_example, env_file)
+            os.chmod(env_file, 0o600)
             ok("已创建 .env，请编辑填入真实 API key")
         else:
             fail(".env 和 .env.example 都不存在")
         return False
 
     # 检查必填项
-    required = [
-        "GATEWAY_MASTER_KEY", "DASHBOARD_TOKEN", "REDIS_PASSWORD", "POSTGRES_PASSWORD",
-    ]
-    optional = [
-        "GLM_API_KEY", "MISTRAL_KEY_1", "MISTRAL_KEY_2",
-        "GEMINI_API_KEY", "GROQ_API_KEY", "SILICONFLOW_API_KEY",
-    ]
-
-    env_vars = {}
-    for line in env_file.read_text().splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            k, v = line.split("=", 1)
-            env_vars[k.strip()] = v.strip()
+    env_vars = env_utils.read_env(env_file)
+    required = ["GATEWAY_MASTER_KEY", "REDIS_PASSWORD", "POSTGRES_PASSWORD"]
+    if env_vars.get("DASHBOARD_AUTH", "local").strip().lower() == "token":
+        required.append("DASHBOARD_TOKEN")
 
     all_ok = True
     for key in required:
@@ -111,8 +136,15 @@ def check_env():
         else:
             ok(f"{key} 已设置")
 
-    filled_optional = sum(1 for k in optional if env_vars.get(k))
-    warn(f"已填写的免费渠道 key: {filled_optional}/{len(optional)}")
+    provider_keys = provider_env_names()
+    filled = sum(
+        1 for key in provider_keys
+        if env_vars.get(key) and not env_vars[key].startswith("dummy-")
+    )
+    if filled:
+        ok(f"已填写的模型渠道凭据: {filled}/{len(provider_keys)}")
+    else:
+        warn("尚未填写模型渠道凭据；管理界面可用，但调用模型前至少配置一个渠道")
 
     return all_ok
 
@@ -137,6 +169,11 @@ def check_config():
 def run_tests():
     """运行 scripts/test_gateway.py。"""
     print(f"\n{BOLD}── 体检测试 ──{RESET}")
+    try:
+        __import__("litellm")
+    except ImportError:
+        warn("未安装本地 litellm，跳过本地网关测试；容器启动时会使用镜像内版本")
+        return True
     result = subprocess.run(
         [sys.executable, "-m", "scripts.test_gateway"],
         capture_output=True,
@@ -192,9 +229,9 @@ def main():
         if not args.check:
             run_tests()
             print(f"\n{BOLD}── 下一步 ──{RESET}")
-            print("  1. 编辑 .env，填入你的免费 API key")
-            print("  2. 运行 docker-compose up -d 启动网关")
-            print("  3. 运行 python3 -m scripts.health_check 检查渠道状态")
+            print("  1. 在仪表盘选择公司和模型，填入至少一个 API Key")
+            print("  2. 运行 ./run.sh 安装并启动全部服务")
+            print("  3. 运行 python3 -m scripts.health_check 检查网关（默认不消耗上游额度）")
             print("  4. 用 Vibe CLI 或 curl 调用 http://127.0.0.1:4000/v1/chat/completions")
     else:
         print(f"\n{YELLOW}{BOLD}⚠  有问题需要先修复，请看上面的 ✗ 标记{RESET}")

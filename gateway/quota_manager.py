@@ -37,11 +37,13 @@ def _safe_id(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:20]
 
 
-async def reserve_limits(items: list[tuple[str, int, int]], amount: int = 1) -> bool:
-    """在一个 Lua 脚本中检查并预占多个共享窗口，避免并发超卖。"""
+async def reserve_limits(
+    items: list[tuple[str, int, int]], amount: int = 1, *, fail_closed: bool = False
+) -> bool:
+    """原子预占共享窗口；付费渠道在 Redis 故障时拒绝放行。"""
     client = usage_tracker.get_client()
     if client is None:
-        return True  # Redis 失效时保持网关可用，但无法保证本地预占精度
+        return not fail_closed
     usable = [
         (key, int(limit), int(window))
         for key, limit, window in items
@@ -57,8 +59,9 @@ async def reserve_limits(items: list[tuple[str, int, int]], amount: int = 1) -> 
         result = await client.eval(_RESERVE_SCRIPT, len(keys), *keys, *args)
         return bool(result)
     except Exception as exc:
-        logger.warning("额度原子预占失败，降级为不拦截: %s", type(exc).__name__)
-        return True
+        behavior = "拒绝付费渠道调用" if fail_closed else "免费渠道降级为不拦截"
+        logger.warning("额度原子预占失败，%s: %s", behavior, type(exc).__name__)
+        return not fail_closed
 
 
 async def reserve_channel(channel: dict[str, Any]) -> bool:
@@ -78,7 +81,10 @@ async def reserve_channel(channel: dict[str, Any]) -> bool:
             item.get("limit") or 0,
             item.get("window_seconds") or 0,
         ))
-    return await reserve_limits(limits)
+    return await reserve_limits(
+        limits,
+        fail_closed=channel.get("billing") == "paid",
+    )
 
 
 async def cooldown_remaining(display_id: str) -> int:

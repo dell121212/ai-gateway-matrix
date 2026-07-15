@@ -1,5 +1,5 @@
 version: 1
-catalog_reviewed_at: "2026-07-11"
+catalog_reviewed_at: "2026-07-14"
 
 # 这份文件只存“调度与数据政策”，真实密钥仍只存在 .env。
 # sensitive_allowed=true 是项目管理员的显式选择，不由 trust=official 自动推导。
@@ -40,6 +40,12 @@ providers:
   FIREWORKS_API_KEY: {trust: third_party}
   LEPTON_API_KEY: {trust: third_party}
   TOGETHER_API_KEY: {trust: third_party}
+  GENERALCOMPUTE_API_KEY:
+    trust: third_party
+    billing: paid
+    sensitive_allowed: false
+    data_policy: review_required
+    capabilities: {tools: true, json_object: true}
   AGNES_API_KEY: {trust: observation}
   AIHUBMIX_API_KEY: {trust: relay}
   VERCEL_AI_API_KEY: {trust: relay}
@@ -60,6 +66,8 @@ model_rules:
     capabilities: {vision: true, tools: true, json_object: true, json_schema: true}
   - match: "deepseek/deepseek-reasoner"
     capabilities: {json_object: true}
+  - match: "openai/llama-4-maverick-17b"
+    capabilities: {vision: true, tools: true, json_object: true}
 
 # 额度未经真实账号验证时不在这里伪造 RPD/TPD。运行时会把
 # config.yaml 里同一凭据的 rpm 取最大值作为保守的 credential 级共享上限。

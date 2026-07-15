@@ -1,0 +1,18 @@
+# 构建 dashboard 镜像只需要 dashboard/requirements.txt。
+# 尤其不能把包含上游 API Key 的 .env 发送到 Docker 构建上下文。
+.git
+.github
+.env
+.env.*
+!.env.example
+.venv
+venv
+env
+__pycache__
+**/__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+state
+tests
+*.log

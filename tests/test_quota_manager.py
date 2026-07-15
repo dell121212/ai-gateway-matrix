@@ -40,3 +40,16 @@ def test_credential_limit_is_shared_across_channels():
     finally:
         usage_tracker._client = old_client
         usage_tracker.aioredis = old_aioredis
+
+
+def test_paid_channel_fails_closed_without_redis(monkeypatch):
+    monkeypatch.setattr(quota_manager.usage_tracker, "get_client", lambda: None)
+    channel = {
+        "display_id": "general-compute",
+        "env_var": "GENERALCOMPUTE_API_KEY",
+        "billing": "paid",
+        "rpm_limit": 20,
+        "credential_rpm_limit": 20,
+    }
+
+    assert asyncio.run(quota_manager.reserve_channel(channel)) is False

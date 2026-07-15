@@ -14,7 +14,7 @@ def registry():
 
 
 def test_all_primary_deployments_are_registered():
-    assert len(registry().channels) == 42
+    assert len(registry().channels) == 43
 
 
 def test_sensitive_pool_only_contains_explicitly_allowed_providers():

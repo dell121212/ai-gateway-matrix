@@ -27,7 +27,7 @@ dashboard/backend.py 在解析 config.yaml 得到的渠道列表基础上做关�
 
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 
 class ProviderInfo(TypedDict):
@@ -35,6 +35,7 @@ class ProviderInfo(TypedDict):
     signup_url: str
     trust: str
     note: str
+    billing: NotRequired[str]
 
 
 # key 是 config.yaml 里 "os.environ/XXX" 引用的变量名（不带 os.environ/ 前缀）
@@ -170,6 +171,13 @@ PROVIDER_CATALOG: dict[str, ProviderInfo] = {
         "signup_url": "https://api.together.xyz/",
         "trust": "third_party",
         "note": "第三方推理托管，试用额度",
+    },
+    "GENERALCOMPUTE_API_KEY": {
+        "name": "General Compute",
+        "signup_url": "https://app.generalcompute.com/dashboard",
+        "trust": "third_party",
+        "note": "已充值的按量付费 API；模型名称由用户按控制台实际可用项填写",
+        "billing": "paid",
     },
     "AGNES_API_KEY": {
         "name": "Agnes AI",

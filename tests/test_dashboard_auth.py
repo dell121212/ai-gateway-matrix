@@ -60,7 +60,44 @@ async def _asgi_get(app, path: str, headers: dict[str, str] | None = None):
     return start["status"], response_headers, json.loads(body)
 
 
-def test_dashboard_api_requires_separate_token(monkeypatch):
+def test_dashboard_local_mode_needs_no_second_login_and_blocks_cross_site(monkeypatch):
+    monkeypatch.setenv("DASHBOARD_AUTH", "local")
+    import dashboard.backend as backend
+    importlib.reload(backend)
+
+    status, headers, body = asyncio.run(_asgi_get(backend.app, "/api/auth/verify"))
+    same_origin_status, _, _ = asyncio.run(
+        _asgi_get(
+            backend.app,
+            "/api/auth/verify",
+            headers={"Origin": "http://127.0.0.1:4000", "Host": "127.0.0.1:4000"},
+        )
+    )
+    legacy_origin_status, _, _ = asyncio.run(
+        _asgi_get(
+            backend.app,
+            "/api/auth/verify",
+            headers={"Origin": "http://127.0.0.1:8080", "Host": "127.0.0.1:8080"},
+        )
+    )
+    cross_site_status, _, _ = asyncio.run(
+        _asgi_get(
+            backend.app,
+            "/api/auth/verify",
+            headers={"Origin": "https://attacker.example", "Sec-Fetch-Site": "cross-site"},
+        )
+    )
+
+    assert status == 200
+    assert same_origin_status == 200
+    assert legacy_origin_status == 200
+    assert body == {"authenticated": True, "mode": "local"}
+    assert cross_site_status == 403
+    assert "access-control-allow-origin" not in headers
+
+
+def test_dashboard_token_mode_remains_available(monkeypatch):
+    monkeypatch.setenv("DASHBOARD_AUTH", "token")
     monkeypatch.setenv("DASHBOARD_TOKEN", "dash-test-secret")
     import dashboard.backend as backend
     importlib.reload(backend)
@@ -77,5 +114,5 @@ def test_dashboard_api_requires_separate_token(monkeypatch):
     assert health_status == 200
     assert denied_status == 401
     assert status == 200
-    assert body == {"authenticated": True}
+    assert body == {"authenticated": True, "mode": "token"}
     assert "access-control-allow-origin" not in headers

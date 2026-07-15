@@ -416,19 +416,40 @@ class ComplexityRouterHook(CustomLogger):
         return bool(value) and not value.startswith("dummy-")
 
     async def _resolve_capability_target(self, pool: str, requirements: set[str]) -> str:
-        if requirements == {"text"}:
-            return pool
         if self._provider_registry is None:
-            raise RuntimeError("供应商能力注册表不可用，拒绝对工具/多模态请求猜测路由")
-        candidates = [
-            channel for channel in self._provider_registry.candidates(pool, requirements)
-            if self._is_configured(channel)
-        ]
-        selected = await quota_manager.choose_and_reserve(candidates)
-        if selected is None:
-            required = ", ".join(sorted(requirements - {"text"}))
-            raise RuntimeError(f"没有已配置且仍有额度的渠道支持请求能力: {required}")
-        return selected["direct_model_name"]
+            raise RuntimeError("供应商注册表不可用，拒绝在未知凭据状态下猜测路由")
+        # 档位只允许向上兜底：快速请求可借用免费/强档，免费请求可借用强档；
+        # 强任务绝不能为了“有结果”而静默降到小模型。这样自用时只配置一个
+        # 强档渠道也能立刻使用，同时仍保留复杂任务的质量边界。
+        fallback_pools = {
+            FAST_POOL: (FAST_POOL, FREE_POOL, STRONG_POOL),
+            FREE_POOL: (FREE_POOL, STRONG_POOL),
+            STRONG_POOL: (STRONG_POOL,),
+        }.get(pool, (pool,))
+        required = ", ".join(sorted(requirements - {"text"})) or "text"
+        had_candidates = False
+        for candidate_pool in fallback_pools:
+            candidates = [
+                channel
+                for channel in self._provider_registry.candidates(candidate_pool, requirements)
+                if self._is_configured(channel)
+            ]
+            if not candidates:
+                continue
+            had_candidates = True
+            # 普通文本仍交给 LiteLLM Router 处理当前请求内的 retry/fallback；
+            # 容器启动器已排除空 Key，并把 priority 映射为官方 order。
+            if requirements == {"text"}:
+                if candidate_pool != pool:
+                    logger.info("[ai-gateway-matrix] %s 无可用渠道，向上回退到 %s", pool, candidate_pool)
+                return candidate_pool
+            selected = await quota_manager.choose_and_reserve(candidates)
+            if selected is not None:
+                return selected["direct_model_name"]
+
+        if had_candidates:
+            raise RuntimeError(f"支持 {required} 的已配置渠道当前额度均不可用")
+        raise RuntimeError(f"没有已配置且支持 {required} 的渠道，请先在仪表盘填写 API Key")
 
     async def _sensitive_target(
         self, data: dict, requirements: set[str]
@@ -446,13 +467,15 @@ class ComplexityRouterHook(CustomLogger):
             "强制使用符合数据政策的渠道",
             sensitive_category,
         )
-        if requirements == {"text"}:
-            return TRUSTED_POOL
         candidates = [
             channel
             for channel in self._provider_registry.sensitive_candidates(requirements)
             if self._is_configured(channel)
         ] if self._provider_registry is not None else []
+        if not candidates:
+            raise RuntimeError("敏感请求没有已配置且符合数据政策的可用渠道")
+        if requirements == {"text"}:
+            return TRUSTED_POOL
         selected = await quota_manager.choose_and_reserve(candidates)
         if selected is None:
             raise RuntimeError("敏感请求需要的能力没有符合数据政策的可用渠道")
@@ -696,8 +719,15 @@ class ComplexityRouterHook(CustomLogger):
             if usage is not None:
                 prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
                 completion_tokens = getattr(usage, "completion_tokens", 0) or 0
-            model = (kwargs.get("litellm_params") or {}).get("model", "")
-            cost, cost_source = pricing.compute_cost(model, response_obj, prompt_tokens, completion_tokens)
+            params = kwargs.get("litellm_params") or {}
+            model = params.get("model", "")
+            cost, cost_source = pricing.compute_cost(
+                model,
+                response_obj,
+                prompt_tokens,
+                completion_tokens,
+                api_base=params.get("api_base"),
+            )
             if start_time is not None and end_time is not None:
                 delta = end_time - start_time
                 latency_ms = float(delta.total_seconds() * 1000) if hasattr(delta, "total_seconds") else None

@@ -16,7 +16,7 @@ from typing import Any, Optional
 import requests
 import yaml
 
-from gateway import channel_ids
+from gateway import channel_ids, env_file
 from gateway.provider_registry import PRIMARY_POOLS, parse_env_ref
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,17 +24,8 @@ DEFAULT_OUTPUT = Path(os.environ.get("PROVIDER_DISCOVERY_OUTPUT", ROOT / "state/
 
 
 def load_env(path: Path) -> None:
-    if not path.exists():
-        return
-    for line in path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, value = stripped.split("=", 1)
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-            value = value[1:-1]
-        os.environ.setdefault(key.strip(), value)
+    for key, value in env_file.read_env(path).items():
+        os.environ.setdefault(key, value)
 
 
 def _upstream_model_name(model: str) -> str:

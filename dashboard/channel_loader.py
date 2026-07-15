@@ -17,7 +17,7 @@ from typing import Optional
 
 import yaml
 
-from gateway import channel_ids, provider_registry, usage_tracker
+from gateway import channel_ids, env_file, provider_registry, usage_tracker
 from .provider_catalog import get_provider_info
 from .safe_files import locked_file, safe_rewrite
 
@@ -41,19 +41,7 @@ def parse_env_var_ref(value: Optional[str]) -> Optional[str]:
 
 def read_env_file(env_path: Path = ENV_PATH) -> dict[str, str]:
     """读取 .env 文件，返回 {KEY: VALUE}。文件不存在就返回空字典（不报错）。"""
-    result: dict[str, str] = {}
-    if not env_path.exists():
-        return result
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, _, value = stripped.partition("=")
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-            value = value[1:-1]
-        result[key.strip()] = value
-    return result
+    return env_file.read_env(env_path)
 
 
 def write_env_var(key: str, value: str, env_path: Path = ENV_PATH) -> None:
@@ -69,12 +57,12 @@ def write_env_var(key: str, value: str, env_path: Path = ENV_PATH) -> None:
         new_lines = []
         for line in lines:
             if pattern.match(line):
-                new_lines.append(f"{key}={value}")
+                new_lines.append(f"{key}={env_file.encode_value(value)}")
                 found = True
             else:
                 new_lines.append(line)
         if not found:
-            new_lines.append(f"{key}={value}")
+            new_lines.append(f"{key}={env_file.encode_value(value)}")
         safe_rewrite(env_path, "\n".join(new_lines) + "\n", mode=0o600)
 
 
@@ -156,6 +144,7 @@ def load_channels(config_path: Path = CONFIG_PATH, env_path: Path = ENV_PATH) ->
             "signup_url": info["signup_url"],
             "trust": info["trust"],
             "note": info["note"],
+            "billing": info.get("billing", "free_or_trial"),
             "tier": TIER_LABELS[pool],
             "tier_pool": pool,
             "is_trusted_pool_member": usage_tracker.make_channel_id(model, api_base) in trusted_keys,

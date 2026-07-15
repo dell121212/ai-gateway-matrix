@@ -26,9 +26,10 @@ services:
     image: ghcr.io/berriai/litellm:v1.91.1
     container_name: ai-gateway-matrix
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:4000:4000"   # 只绑定本机，个人用场景不需要对外网暴露；
-                                 # 真要远程访问的话自己把 127.0.0.1 删掉，并配合防火墙/反代加认证
+    # 不直接暴露宿主端口；Dashboard 在 Docker 内网透明代理全部 LiteLLM
+    # 路径，并在宿主 4000 端口提供中文统一界面。
+    expose:
+      - "4000"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./gateway:/app/gateway:ro
@@ -47,10 +48,16 @@ services:
       - LITELLM_LOG=INFO
       # v2 新增：关闭遥测上报（隐私 + 减少不必要的网络请求）
       - LITELLM_TELEMETRY=False
+      # 主配置保留全部供应商供仪表盘编辑；启动器只把已填写凭据的 deployment
+      # 写进 /app 运行时配置，避免 LiteLLM 选中空 API Key；LiteLLM 也会以
+      # 配置所在目录解析 gateway.custom_router_hook，因此不能放到 /tmp。
+      - SOURCE_GATEWAY_CONFIG_PATH=/app/config.yaml
+      - GATEWAY_CONFIG_PATH=/app/runtime-config.yaml
       - PROVIDER_DISCOVERY_OUTPUT=/app/state/provider-discovery.json
     security_opt:
       - no-new-privileges:true
-    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    entrypoint: ["python", "-m", "gateway.runtime_launcher"]
+    command: ["--port", "4000"]
     depends_on:
       redis:
         condition: service_healthy
@@ -116,8 +123,12 @@ services:
     working_dir: /app
     env_file:
       - .env
+    # .env 保持宿主机 0600 权限；Dashboard 以文件所有者身份读写它。
+    # 服务同时 drop 全部 capabilities，不能依赖容器 root 绕过权限。
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     ports:
-      - "127.0.0.1:8080:8080"   # 同样只绑定本机；仪表盘能改 API Key，比主服务更不该对外网暴露
+      - "127.0.0.1:4000:8080"   # 中文统一入口 + OpenAI-compatible API
+      - "127.0.0.1:8080:8080"   # 兼容旧书签；与 4000 是同一个界面
     volumes:
       - ./config.yaml:/app/config.yaml   # 读写：优先级修改功能需要写入这个文件
       - ./gateway:/app/gateway:ro
@@ -130,12 +141,15 @@ services:
       - REDIS_PORT=6379
       - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD is required; run ./run.sh}
       - PYTHONPATH=/app
+      - LITELLM_UPSTREAM_URL=http://ai-gateway-matrix:4000
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
     depends_on:
       redis:
+        condition: service_healthy
+      ai-gateway-matrix:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz', timeout=5)"]
@@ -153,6 +167,10 @@ services:
     working_dir: /app
     env_file:
       - .env
+    # state 是宿主机绑定挂载目录。容器同时启用了 cap_drop: ALL，因此即使
+    # 进程名义上是 root，也不能绕过宿主目录的 DAC 权限。显式使用启动
+    # run.sh 的用户身份，既能写入 ./state，也不需要 chmod 777 或 sudo。
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./gateway:/app/gateway:ro
@@ -164,7 +182,8 @@ services:
     cap_drop:
       - ALL
     healthcheck:
-      test: ["CMD", "python", "-c", "from pathlib import Path; assert Path('/app/state/provider-discovery.json').is_file()"]
+      # 不只检查文件“曾经存在”，还要检查每小时的审计循环仍在更新它。
+      test: ["CMD", "python", "-c", "from pathlib import Path; import time; p=Path('/app/state/provider-discovery.json'); assert p.is_file() and time.time() - p.stat().st_mtime < 4500"]
       interval: 30s
       timeout: 5s
       retries: 10

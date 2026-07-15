@@ -4,7 +4,7 @@
 
 litellm[proxy]==1.91.1
 pyyaml==6.0.3
-requests==2.32.4
+requests==2.34.2
 # usage_tracker.py 用到；custom_router_hook.py 里已经做了 import 失败的兜底，
 # 缺这个包不会导致网关崩溃，只是仪表盘看不到用量数据
 redis==5.2.0

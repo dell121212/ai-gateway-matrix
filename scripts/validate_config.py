@@ -185,6 +185,18 @@ def validate() -> tuple[list[str], list[str]]:
     if "litellm:main-latest" in image:
         errors.append("LiteLLM Docker 镜像仍使用 main-latest")
 
+    dockerignore_path = ROOT / ".dockerignore"
+    if not dockerignore_path.is_file():
+        errors.append("缺少 .dockerignore，Docker 构建可能上传 .env 密钥")
+    else:
+        dockerignore_patterns = {
+            line.strip()
+            for line in dockerignore_path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        if ".env" not in dockerignore_patterns:
+            errors.append(".dockerignore 未排除 .env 密钥文件")
+
     pool_counts = Counter(item.get("model_name") for item in primary)
     warnings.append(
         "主 deployment: " + ", ".join(f"{pool}={pool_counts[pool]}" for pool in PRIMARY_POOLS)

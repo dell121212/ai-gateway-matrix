@@ -4,14 +4,15 @@
 渠道健康检查 & 状态查询脚本 (v2 新增)
 ————————————————————————————————
 用法：
-  python3 -m scripts.health_check              # 检查所有渠道健康状态
+  python3 -m scripts.health_check              # 安全检查，不调用上游模型
   python3 -m scripts.health_check --watch      # 持续监控，每 30 秒刷新一次
   python3 -m scripts.health_check --json       # 输出 JSON 格式（方便接入告警系统）
+  python3 -m scripts.health_check --probe-upstreams  # 显式发送真实模型探测
 
 功能：
-  1. 查询 LiteLLM 的 /health 端点，获取所有渠道的实时健康状态
-  2. 查询 /v1/models 端点，确认所有模型分组可见
-  3. 查询 custom_router_hook 的统计计数器，看复杂度路由的分布情况
+  1. 默认查询 /health/liveliness，不产生模型调用或额度消耗
+  2. 只有显式 --probe-upstreams 才查询 /health（可能消耗免费/付费额度）
+  3. 查询 /v1/models 端点，确认所有模型分组可见
   4. 输出彩色 / JSON 格式的报告
 
 依赖：只需要 requests 库（pip install requests）
@@ -27,6 +28,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from gateway import env_file
+
 try:
     import requests
 except ImportError:
@@ -38,17 +41,8 @@ except ImportError:
 def _load_local_env() -> None:
     """读取本地 .env，只填充尚未由宿主环境设置的变量。"""
     env_path = Path(__file__).resolve().parents[1] / ".env"
-    if not env_path.exists():
-        return
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, value = stripped.split("=", 1)
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-            value = value[1:-1]
-        os.environ.setdefault(key.strip(), value)
+    for key, value in env_file.read_env(env_path).items():
+        os.environ.setdefault(key, value)
 
 
 _load_local_env()
@@ -71,13 +65,24 @@ def _headers() -> dict:
     return h
 
 
-def check_health() -> dict:
-    """查询 /health 端点。"""
+def check_health(probe_upstreams: bool = False) -> dict:
+    """安全检查存活；仅在显式请求时调用会探测供应商的 /health。"""
+    endpoint = "/health" if probe_upstreams else "/health/liveliness"
+    timeout = 180 if probe_upstreams else 5
     try:
-        resp = requests.get(f"{GATEWAY_URL}/health", headers=_headers(), timeout=10)
+        resp = requests.get(f"{GATEWAY_URL}{endpoint}", headers=_headers(), timeout=timeout)
         if resp.status_code == 200:
-            return {"status": "ok", "data": resp.json()}
-        return {"status": "error", "code": resp.status_code, "msg": resp.text[:200]}
+            return {
+                "status": "ok",
+                "mode": "upstream_probe" if probe_upstreams else "liveliness",
+                "data": resp.json(),
+            }
+        return {
+            "status": "error",
+            "mode": "upstream_probe" if probe_upstreams else "liveliness",
+            "code": resp.status_code,
+            "msg": resp.text[:200],
+        }
     except requests.exceptions.ConnectionError:
         return {"status": "unreachable", "msg": "网关未启动或无法连接"}
     except Exception as e:
@@ -142,7 +147,9 @@ def print_report(health: dict, models: dict, hook: dict, json_output: bool = Fal
         print(f"  {RED}●{RESET} 网关存活: {RED}DEAD{RESET} ({hook.get('msg', 'unknown')})")
 
     # ── 渠道健康 ────────────────────────────────────────────────
-    if health.get("status") == "ok":
+    if health.get("status") == "ok" and health.get("mode") == "liveliness":
+        print(f"\n  {GREEN}✓{RESET} 上游真实探测: 未执行（安全模式，不消耗模型额度）")
+    elif health.get("status") == "ok":
         data = health.get("data", {})
         healthy = data.get("healthy_endpoints", [])
         unhealthy = data.get("unhealthy_endpoints", [])
@@ -185,15 +192,22 @@ def main():
     parser.add_argument("--watch", action="store_true", help="持续监控模式")
     parser.add_argument("--json", action="store_true", help="JSON 输出")
     parser.add_argument("--interval", type=int, default=30, help="监控刷新间隔（秒）")
+    parser.add_argument(
+        "--probe-upstreams",
+        action="store_true",
+        help="调用 LiteLLM /health 真实探测已配置渠道；可能消耗额度",
+    )
     args = parser.parse_args()
     if args.interval <= 0:
         parser.error("--interval 必须大于 0")
+    if args.watch and args.probe_upstreams:
+        parser.error("--probe-upstreams 不允许与 --watch 同时使用，避免循环消耗模型额度")
 
     if args.watch:
         try:
             while True:
-                os.system("clear" if os.name != "nt" else "cls")
-                health = check_health()
+                print("\033[2J\033[H", end="")
+                health = check_health(False)
                 models = check_models()
                 hook = check_hook_stats()
                 print_report(health, models, hook, json_output=False)
@@ -202,7 +216,9 @@ def main():
         except KeyboardInterrupt:
             print("\n  已退出监控模式")
     else:
-        health = check_health()
+        if args.probe_upstreams and not args.json:
+            print(f"{YELLOW}⚠ 将向所有已配置渠道发送真实探测，可能消耗免费或付费额度。{RESET}")
+        health = check_health(args.probe_upstreams)
         models = check_models()
         hook = check_hook_stats()
         print_report(health, models, hook, json_output=args.json)
