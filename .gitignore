@@ -1,57 +1,56 @@
-# 环境变量（包含 API key，绝对不能提交）
-.env
-.env.local
-.env.*.local
 
-# Python
-__pycache__/
-*.py[cod]
+*~
 *$py.class
-*.so
-.Python
+# 环境变量（包含 API key，绝对不能提交）
+# 日志
+# 虚拟环境
+# 运行时生成的上游模型目录审计结果
 build/
+*.db
 develop-eggs/
 dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# 虚拟环境
-venv/
-env/
-ENV/
-.venv/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
 # Docker
 docker-compose.override.yml
-
-# 日志
-*.log
-logs/
-
-# 运行时生成的上游模型目录审计结果
-state/*.json
-
-# OS
+downloads/
 .DS_Store
-Thumbs.db
-
+*.egg
+*.egg-info/
+.eggs/
+eggs/
+.env
+env/
+ENV/
+.env.*.local
+.env.local
+# IDE
+.idea/
+.installed.cfg
+lib/
+lib64/
 # LiteLLM 数据库
 litellm.db
-*.db
+*.log
+logs/
+# OS
+parts/
+__pycache__/
+*.py[cod]
+# Python
+.Python
+sdist/
+*.so
+state/client-keys.json
+state/*.json
+state/ui-settings.json
+state/reload.signal
+# 本机故障交接与手工页面备份，不属于发布产物
+CONTINUE_AFTER_REBOOT.txt
+*.bak-*
+*.swo
+*.swp
+Thumbs.db
+var/
+.venv/
+venv/
+.vscode/
+wheels/

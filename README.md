@@ -30,7 +30,7 @@
    │             │ 改写 model=                        │
    │             ▼                                    │
    │  ┌───────────────────────────────────────┐    │
-   │  │ LiteLLM Router (usage-based-routing-v2)│    │
+   │  │ LiteLLM Router (simple-shuffle)        │    │
    │  │ 按 RPM / 预算 / 优先级负载均衡           │    │
    │  └──────────┬──────────────────────────────┘    │
    └─────────────┼───────────────────────────────────┘
@@ -97,7 +97,7 @@ curl http://127.0.0.1:4000/v1/chat/completions \
   -d '{"model":"auto-route","messages":[{"role":"user","content":"你好"}]}'
 ```
 
-> 通过仪表盘填写 Key、模型名或优先级后，再执行一次 `bash run.sh` 应用配置。
+> 通过仪表盘填写 Key、模型名或优先级后会自动热加载，无需再跑 `bash run.sh`（仅首次部署需要）。
 > Docker 的普通 `restart` 不会重新读取 `.env`，因此不要用它代替启动脚本。
 
 ## 模型分组
@@ -116,9 +116,9 @@ curl http://127.0.0.1:4000/v1/chat/completions \
 2. **敏感内容检测**：扫描消息、tool arguments 和函数定义，命中后只走 manifest 允许的渠道。
 3. **限时优先**：只有能力匹配、凭据已配置、未熔断且原子额度预占成功才会直连。
 4. **硬约束与复杂度**：长上下文先于外部分类器强制升档，再处理关键词和弱/中/强分类。
-5. **可选外部分类器**：只在显式配置 `CLASSIFIER_API_KEY` 时启用，独立 RPM 预占并记入账本；否则使用本地启发式。
+5. **智能模式两段式**：默认用强档可用 Key 调强模型快速判断提问强度（弱/中/强），再改写到对应池作答；无可用 Key 或分诊失败时回退本地启发式。可用 `CLASSIFIER_API_KEY` / `CLASSIFIER_MODEL` 固定分诊模型。
 
-**关于 Agnes AI**：这是一个上线约一个月的新渠道，官方宣称永久免费、20 RPM、无总量上限。额度确实很香，`config.yaml` 里保留了它并给了不低的优先级（`free-pool` 优先级 60），但刻意做了两件事：不加入 `trusted-pool`（敏感内容永远不会分给它），也不加入 `strong-model-pool`（复杂任务默认走有官方背书的大模型渠道）。如果你想让它也处理强档任务，可以照 `config.yaml` 里其他条目的格式手动加一份，但请再想一遍这么做是否值得。
+**关于 Agnes AI**：观察期渠道。免费账户以 **Effective RPM** 为准（文本 agnes-2.0-flash 实际约 **20 次/分钟**；Allowed 表可能写 30；图片/视频另有更低频率）。公开文档**未标日/周/月调用总量**，现行主要靠每分钟限流而非每日 Token 包。`config.yaml` 中 `rpm: 20`、`free-pool` 优先级 60；**不进** `trusted-pool` / `strong-model-pool`。
 
 ## 文件说明
 
@@ -149,7 +149,9 @@ curl http://127.0.0.1:4000/v1/chat/completions \
 | `gateway/provider_registry.py` | 将 manifest 与 LiteLLM deployment 合并成运行时调度注册表 |
 | `gateway/quota_manager.py` | Redis Lua 原子预占、凭据共享限额和被动熔断；付费渠道故障时 fail-closed |
 | `gateway/runtime_launcher.py` | 启动时剔除空凭据 deployment，并把前端优先级转换成 LiteLLM `order` |
-| `scripts/provider_discovery.py` | 定时审计 OpenAI-compatible 上游 `/models` 目录，不自动篡改配置 |
+| `scripts/provider_discovery.py` | 定时审计上游 `/models`；`--autofix` 时对 model_missing 模糊匹配+强模型裁决并写回 config |
+| `gateway/model_autofix.py` | 请求因模型名失效失败时自愈：拉目录 → 相似度 → 可选强模型裁决 → 改 config |
+| `gateway/usage_tracker.py` | 用量 + **顺畅时段**（按本地小时累计成功/失败，仪表盘标注） |
 | `scripts/validate_config.py` | 严格 YAML、派生 direct、manifest、env 引用与 fallback 无环校验 |
 | `gateway/pricing.py` | 单价查询：先查 litellm 内置价格库，查不到用小估算表兜底，都查不到就诚实返回"未知" |
 | `dashboard/config_editor.py` | 安全地在 config.yaml 里定位并修改单个渠道的 priority 字段 |
@@ -212,11 +214,13 @@ curl http://127.0.0.1:4000/v1/chat/completions \
 
 ## 限时优先（活动额度 / 快过期额度优先烧）
 
-对应需求："如果存在被标记的渠道，就都走它，用来处理快过期的 API 和活动 API"。
+对应需求：优先消耗快过期的 API 和活动 API，同时不让高难任务降档。
 
 在仪表盘上给任意渠道点"⚡ 标记限时优先"，可以选填一个过期时间（比如"7 天试用额度"）：
 
-- 标记生效后，**除敏感内容外**的所有请求（不管原本该分到弱/中/强哪一档）都会优先路由到这个渠道，直到取消标记、设置的时间到期、或它这一分钟的 RPM 被打满
+- 标记生效后，只优先承接**不高于该渠道自身档位**的非敏感任务。例如标记中档后，弱档和中档任务优先给它，强档和顶级任务仍走上级池
+- 标记强档可优先承接弱/中/强任务，但不会抢顶级任务；标记弱档只优先承接弱档任务
+- 渠道无额度、不健康、处于熔断或能力不匹配时自动跳过，回到正常路由
 - RPM 打满只是临时跳过（下一分钟窗口恢复后继续用），不是永久失效
 - 多个渠道同时被标记时，按"最快过期的先用"排序
 - 过期时间到了自动失效（用 Redis 的 TTL 实现，不需要额外的定时任务清理）
@@ -270,7 +274,7 @@ curl http://127.0.0.1:4000/v1/chat/completions \
 跟 LiteLLM 自带的 Admin UI（`/ui`，按花费/请求数展示）不是一回事：那个是"花了多少钱"视角，对这批 `max_budget: 0.01` 的免费渠道意义不大；这个仪表盘是"还剩多少次调用/什么时候重置"视角，两者互补。
 
 **诚实的限制**：
-- 分钟用量是固定 60 秒窗口，日用量按 `USAGE_TIMEZONE` 的自然日统计；它们跟 LiteLLM Router 内部 `usage-based-routing-v2` 不是同一套账本，仪表盘数字不代表 Router 内部限流判断的精确依据。
+- 分钟用量是固定 60 秒窗口，日用量按 `USAGE_TIMEZONE` 的自然日统计；它们跟 LiteLLM Router 内部限流/冷却不是同一套账本，仪表盘数字不代表 Router 内部限流判断的精确依据。生产路由默认 `simple-shuffle`（官方推荐；避免 `usage-based-routing-v2` 的 #16060 误报）。
 - Redis 不可用时仪表盘会显示"暂无实时用量数据"，不会瞎显示 0 次误导你。
 - 仪表盘不负责决定某个渠道该属于弱/中/强哪一档——那是 `config.yaml` 里 `model_name` 分组决定的事，仪表盘只负责展示当前档位 + 填 key。
 
@@ -278,7 +282,7 @@ curl http://127.0.0.1:4000/v1/chat/completions \
 
 - **普通池内调度**：能力直连/限时优先已使用 Redis Lua 做凭据级原子预占；纯文本的普通池内选择仍由 LiteLLM Router 负责，需要结合真实账号限额压测。
 - **空凭据与优先级**：源配置保留完整渠道目录供编辑；每次 `bash run.sh` 都会生成仅含已配置渠道的运行时配置，优先级越高越先尝试。快速/中档可以向上借用强档，强档不会向下静默降级。
-- **外部分类器默认关闭**：只有显式填写 `CLASSIFIER_API_KEY` 才会产生额外网络调用；限流或失败会回退本地规则。
+- **智能分诊默认开启（有强档 Key 时）**：自动选用已配置强档做强度判断；也可 `CLASSIFIER_*` 固定；失败回退启发式。
 - **Docker iptables**：在某些沙盒环境（如 Manus 验证环境）中，iptables `raw` 表缺失会导致 Docker 网络初始化失败。这是环境问题，不是项目 bug。在正常 Linux 主机上不受影响。
 - **Redis/Postgres 连接**：需要 Docker 启动后才能验证。`scripts/health_check.py` 可以帮助确认连接状态；Redis 同时也是仪表盘用量统计的数据来源，不通的话仪表盘会显示"暂无数据"而不是报错。
 - **多账号 ToS 风险**：Mistral 用两个账号叠加免费额度这件事，大概率违反 Mistral 的服务条款（多数厂商都禁止"创建多个账号规避速率限制"）。这是个人白嫖习惯，请不要直接搬进有真实业务负载的项目里。

@@ -13,10 +13,30 @@ import yaml
 
 from . import channel_ids
 
-PRIMARY_POOLS = ("fast-pool", "free-pool", "strong-model-pool")
+PRIMARY_POOLS = ("fast-pool", "free-pool", "strong-model-pool", "elite-model-pool")
 CAPABILITY_KEYS = (
     "text", "vision", "tools", "json_object", "json_schema", "audio",
 )
+
+
+def default_config_path() -> Path:
+    """Return the complete catalog used by the routing hook.
+
+    Docker's ``GATEWAY_CONFIG_PATH`` points at a credential-filtered runtime
+    file.  Keys added later through the dashboard can hot-reload LiteLLM's
+    Router, but they will never appear in a registry cached from that filtered
+    file.  Prefer the unfiltered source catalog and retain the runtime path only
+    as a compatibility fallback for deployments without runtime_launcher.
+    """
+    for env_name in (
+        "PROVIDER_REGISTRY_CONFIG_PATH",
+        "SOURCE_GATEWAY_CONFIG_PATH",
+        "GATEWAY_CONFIG_PATH",
+    ):
+        value = (os.environ.get(env_name) or "").strip()
+        if value:
+            return Path(value)
+    return Path("config.yaml")
 
 
 def parse_env_ref(value: Any) -> Optional[str]:
@@ -249,6 +269,6 @@ def load_registry(
     manifest_path: Optional[str] = None,
 ) -> ProviderRegistry:
     return ProviderRegistry(
-        Path(config_path or os.environ.get("GATEWAY_CONFIG_PATH", "config.yaml")),
+        Path(config_path) if config_path else default_config_path(),
         Path(manifest_path or os.environ.get("PROVIDER_MANIFEST_PATH", "provider_manifest.yaml")),
     )

@@ -22,13 +22,24 @@ import hashlib
 from typing import Optional
 
 
-def make_display_id(model: str, api_base: Optional[str], env_var: Optional[str]) -> str:
-    """稳定的展示/API 用主键，不依赖是否已经配置了真实 key。
+def make_legacy_display_id(model: str, api_base: Optional[str], env_var: Optional[str]) -> str:
+    """旧版人类可读 id（含 # / @）。仅作兼容查找，勿再写入 URL。
 
-    跟 dashboard/channel_loader.py 里原来单独写的那份逻辑保持一致
-    （这里抽成共享函数，避免两边各写一份、以后改一个忘了改另一个）。
+    历史 bug：id 形如 ``openrouter/foo@default#OPENROUTER_API_KEY``，
+    放进 ``/api/channels/{id}/probe`` 时，浏览器会把 ``#...`` 当 URL fragment
+    丢掉，服务端只收到截断 id → 404「渠道不存在」（OpenRouter 必现）。
     """
     return f"{model}@{api_base or 'default'}#{env_var or 'no-env'}"
+
+
+def make_display_id(model: str, api_base: Optional[str], env_var: Optional[str]) -> str:
+    """稳定、URL 安全的渠道主键（路径/HTML onclick 可用）。
+
+    用哈希而不是拼接 model 路径：OpenRouter 等 model 名含 ``/``、``:``、``#``，
+    不适合直接当 REST path。
+    """
+    raw = f"{model}|{api_base or ''}|{env_var or ''}"
+    return "ch-" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
 
 def make_direct_model_name(model: str, api_base: Optional[str], env_var: Optional[str]) -> str:

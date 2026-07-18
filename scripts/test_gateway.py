@@ -94,7 +94,7 @@ async def main() -> int:
     from litellm import Router
     router = Router(
         model_list=cfg["model_list"],
-        routing_strategy=cfg.get("router_settings", {}).get("routing_strategy", "usage-based-routing-v2"),
+        routing_strategy=cfg.get("router_settings", {}).get("routing_strategy", "simple-shuffle"),
         enable_pre_call_checks=cfg.get("router_settings", {}).get("enable_pre_call_checks", False),
         num_retries=cfg.get("router_settings", {}).get("num_retries", 3),
         cooldown_time=cfg.get("router_settings", {}).get("cooldown_time", 60),
@@ -386,7 +386,7 @@ async def main() -> int:
     }]
     test_router = Router(
         model_list=test_model_list,
-        routing_strategy="usage-based-routing-v2",
+        routing_strategy="simple-shuffle",
         enable_pre_call_checks=False,  # 测试环境无 Redis，关闭预检查避免误拒
     )
     results = await asyncio.gather(*[_try_select_deployment(test_router) for _ in range(5)])

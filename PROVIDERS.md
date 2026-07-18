@@ -17,11 +17,10 @@
 ### Tier 1: 永久免费层（国际）
 | 渠道 | 模型 | RPM | 上下文 | 特点 |
 |------|------|-----|--------|------|
-| **Agnes AI**（观察期，请知情后使用） | Agnes-2.0-Flash | 20 | 1M | 自称永久免费/无Token上限；上线约一个月，"Claw-Eval"评测是自建/关联站点，非独立第三方评测 |
+| **Agnes AI**（观察期，请知情后使用） | Agnes-2.0-Flash | **Effective 20** RPM（Allowed 常写 30；图/视频另有 20/10/1/1 与 1 RPM） | 文档常见 256K–512K（曾宣传 1M，以控制台为准） | 免费账户公开规则主要为 **RPM 限流**，**未标日/月总量**；观察期、"Claw-Eval" 为自建/关联评测 |
 | Google Gemini | Gemini 3.5/2.5 Flash, 2.5 Pro | 15 | 900K+ | 官方免费层 |
 | Groq | GPT-OSS 20B/120B, Qwen 3.6 27B | 30 | 131K | LPU 超快推理；Qwen 支持视觉 |
-| Cerebras | GPT-OSS 120B, Z.ai GLM 4.7 | 10-30 | 120K+ | WSE 超快推理；GLM 为预览/低 RPD |
-| SambaNova | Llama 3.1 405B/70B/8B | 10-50 | 120K | 唯一免费 405B |
+| Cerebras | GPT-OSS 120B, Z.ai GLM 4.7 | 低限额，以控制台为准 | 120K+ | WSE 超快；官网仍有 $0 Free API 层 |
 | GLM (智谱) | GLM-4.7-Flash | 200 | 200K | 完全免费；2026-01-20 起替代 GLM-4.5-Flash |
 | SiliconFlow | GLM/Qwen/DeepSeek（第三方托管） | 50-100 | 30-60K | 国内加速，非模型原厂直营 |
 | Mistral AI | Mistral Small（×2 账号） | 10 | 30K | 欧洲推理；⚠️ 多账号叠加额度有 ToS 风险 |
@@ -29,12 +28,11 @@
 | OpenRouter | Llama 3.3 70B / Mistral Nemo / Gemma 2 9B / DeepSeek R1（免费模型层） | 10-20 | 8-120K | 多供应商聚合 |
 | HuggingFace | 免费推理 API | 10 | 30K | 社区模型 |
 | NVIDIA NIM | Llama 3.3 70B, Nemotron 70B | 40 | 120K | NVIDIA 托管，非模型原厂 |
-| DeepInfra | Llama 3.3 70B | 30 | 128K | 免费层 |
 
 ### Tier 2: 国内官方免费层
 | 渠道 | 模型 | 免费额度 | 上下文 |
 |------|------|----------|--------|
-| 阿里云百炼 | Qwen Plus/Turbo | 100万 tokens/月 | 8-120K |
+| 阿里云百炼 | Qwen Plus/Turbo | 新人一次性额度（30～90 天） | 8-120K |
 | 腾讯混元 | hunyuan-turbos | 100万 tokens | 28K |
 | 百度千帆 | ERNIE Speed | 免费 | 128K |
 | 月之暗面 Kimi | moonshot-v1-8k | 试用额度 | 8K |
@@ -43,6 +41,8 @@
 | 渠道 | 免费额度 | 备注 |
 |------|----------|------|
 | Together AI | $5 | 试用 |
+| SambaNova | $5 / 30 天 | 一次性试用，之后按量 |
+| DeepInfra | 无稳定免费层 | 需正余额，按量付费 |
 | Novita AI | 试用额度 | 多模型 |
 | Fireworks AI | 试用额度 | 快速推理 |
 | Lepton AI | 试用额度 | 自定义模型 |

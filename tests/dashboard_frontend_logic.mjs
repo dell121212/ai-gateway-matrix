@@ -5,6 +5,9 @@ const html = fs.readFileSync(new URL("../dashboard/static/index.html", import.me
 if (!html.includes('id="apiBaseValue"') || !html.includes("AI API 控制台")) {
   throw new Error("Chinese unified API console is missing");
 }
+if (!html.includes("累计节省") || html.includes("预计累计花费")) {
+  throw new Error("cumulative savings hero metric is missing");
+}
 const start = html.indexOf("<script>") + "<script>".length;
 const end = html.lastIndexOf("</script>");
 if (start < "<script>".length || end < start) throw new Error("dashboard script not found");
@@ -17,9 +20,14 @@ function element(id) {
       innerHTML: "",
       textContent: "",
       value: "",
+      hidden: false,
       dataset: {},
       listeners: {},
-      classList: { add() {}, remove() {} },
+      classList: {
+        add() {},
+        remove() {},
+        toggle() { return false; },
+      },
       addEventListener(type, listener) { this.listeners[type] = listener; },
       focus() {},
       select() {},
@@ -35,6 +43,10 @@ const sandbox = {
   document: {
     getElementById: element,
     querySelectorAll() { return []; },
+    querySelector() { return null; },
+    addEventListener() {},
+    scrollingElement: { scrollTop: 0 },
+    documentElement: { scrollTop: 0 },
   },
   window: {
     prompt() { return ""; },
@@ -49,6 +61,7 @@ const sandbox = {
   setInterval() { return 0; },
   setTimeout() { return 0; },
   clearTimeout() {},
+  morphdom: undefined,
 };
 vm.createContext(sandbox);
 vm.runInContext(html.slice(start, end), sandbox);
@@ -62,16 +75,24 @@ vm.runInContext(`
     provider_name: "Unconfigured", model: "openai/b", tier: "强",
     is_configured: false, is_optimal: true, priority: 999,
   };
-  const sorted = [unconfigured, configured].sort(channelOrder);
-  if (sorted[0] !== configured) throw new Error("configured channel was not pinned first");
+  const sorted = [configured, unconfigured].sort(channelOrder);
+  if (sorted[0] !== unconfigured) throw new Error("manual priority was not the strongest sort key");
 
-  const grouped = groupChannelsByProvider([
-    {...configured, channel_id: "a", provider_name: "One Co"},
-    {...configured, channel_id: "b", provider_name: "One Co", model: "openai/b"},
-    {...configured, channel_id: "c", provider_name: "Two Co"},
-  ], "强");
-  if (grouped.length !== 2 || grouped[0].items.length !== 2) {
-    throw new Error("provider cards were not grouped for model dropdowns");
+  activeTier = "全部";
+  const grouped = groupChannelsByCompany([
+    {...configured, channel_id: "a", company_id: "low", company_name: "Low", tier: "弱"},
+    {...unconfigured, channel_id: "b", company_id: "high", company_name: "High", tier: "顶级"},
+    {...unconfigured, channel_id: "c", company_id: "mid", company_name: "Mid", tier: "顶级", priority: 100},
+  ]);
+  if (grouped[0].company_id !== "low") {
+    throw new Error("companies with a higher tier were not sunk");
+  }
+  if (grouped[1].company_id !== "high" || grouped[2].company_id !== "mid") {
+    throw new Error("manual priority was not strongest inside the same sink group");
+  }
+
+  if (fmtTokensM(3778) !== "0.0038M" || fmtTokensM(2500000) !== "2.50M") {
+    throw new Error("token usage was not formatted in millions");
   }
 
   searchQuery = "general compute";
@@ -94,4 +115,4 @@ vm.runInContext(`
   if (collapsedTiers.size !== 0) throw new Error("expand all failed");
 `, sandbox);
 
-console.log("dashboard search/collapse/configured-first logic: PASS");
+console.log("dashboard search/collapse/priority-first logic: PASS");

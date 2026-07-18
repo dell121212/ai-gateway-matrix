@@ -1,6 +1,8 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-ui-build="1784278909">
 <head>
+<meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate" />
+<meta http-equiv="Pragma" content="no-cache" />
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>AI API 控制台 · AI Gateway Matrix</title>
@@ -49,12 +51,20 @@
 
   /* ── Hero ───────────────────────────────────────── */
   .hero {
-    display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
-    flex-wrap: wrap;
-    gap: 24px;
-    margin-bottom: 36px;
+    position: relative;
+    overflow: hidden;
+    display: grid;
+    grid-template-columns: minmax(230px, 0.75fr) minmax(0, 2fr);
+    align-items: center;
+    gap: 28px;
+    margin-bottom: 28px;
+    padding: 24px;
+    border: 1px solid rgba(255,255,255,0.72);
+    border-radius: 24px;
+    background: rgba(255,255,255,0.72);
+    box-shadow: 0 18px 55px rgba(33,48,72,0.09);
+    backdrop-filter: blur(24px) saturate(140%);
+    -webkit-backdrop-filter: blur(24px) saturate(140%);
   }
   .hero h1 {
     font-size: 40px;
@@ -67,12 +77,19 @@
     color: var(--text-secondary);
     margin: 0;
   }
+  .hero-metrics {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 190px;
+    align-items: stretch;
+    gap: 18px;
+    min-width: 0;
+  }
   .hero-stats {
-    display: flex;
-    gap: 24px;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    max-width: 560px;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(70px, 1fr));
+    align-content: center;
+    gap: 18px 14px;
+    min-width: 0;
   }
   .hero-stat { text-align: right; }
   .hero-stat .num {
@@ -85,6 +102,17 @@
     color: var(--text-secondary);
     margin-top: 2px;
   }
+  .today-stats {
+    display: grid;
+    align-content: center;
+    gap: 14px;
+    padding: 14px 16px;
+    border: 1px solid rgba(0, 113, 227, 0.14);
+    border-radius: 17px;
+    background: rgba(0, 113, 227, 0.055);
+  }
+  .today-stats .hero-stat { text-align: left; }
+  .today-stats .num { color: var(--accent); }
   .eyebrow {
     margin-bottom: 9px;
     color: var(--accent);
@@ -183,6 +211,131 @@
     cursor: pointer;
   }
   .copy-btn:hover { background: rgba(0,113,227,0.16); }
+  .api-keys-section {
+    position: relative;
+    z-index: 1;
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid var(--divider);
+  }
+  .api-keys-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .api-keys-title {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+  .api-keys-hint {
+    margin: 0 0 10px;
+    font-size: 12px;
+    color: var(--text-tertiary);
+    line-height: 1.45;
+  }
+  .api-keys-create-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+  }
+  .api-key-name-input {
+    flex: 1;
+    min-width: 160px;
+    border: 1px solid var(--divider);
+    border-radius: 10px;
+    padding: 9px 12px;
+    background: rgba(245,245,247,0.9);
+    font-size: 13px;
+    outline: none;
+  }
+  .api-key-name-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(0,113,227,0.12);
+  }
+  .api-keys-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    border: 1px solid var(--divider);
+    border-radius: var(--radius-md);
+    background: rgba(255,255,255,0.72);
+    overflow: hidden;
+  }
+  .api-key-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 10px;
+    align-items: center;
+    padding: 12px 14px;
+  }
+  .api-key-row + .api-key-row {
+    border-top: 1px solid var(--divider);
+  }
+  .api-key-row-title {
+    font-size: 14px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+  }
+  .api-key-row-meta {
+    margin-top: 3px;
+    font-size: 12px;
+    color: var(--text-tertiary);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  .api-key-row-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  .api-keys-empty {
+    padding: 18px 14px;
+    text-align: center;
+    font-size: 13px;
+    color: var(--text-tertiary);
+  }
+  .mode-picker {
+    position: relative;
+    z-index: 1;
+    margin-top: 12px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .mode-card {
+    border: 1px solid var(--divider);
+    border-radius: 999px;
+    padding: 7px 12px;
+    background: rgba(255,255,255,0.72);
+    cursor: pointer;
+    text-align: left;
+    transition: border-color .15s ease, box-shadow .15s ease, background .15s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+    max-width: 100%;
+  }
+  .mode-card:hover { border-color: rgba(0,113,227,0.35); }
+  .mode-card.active {
+    border-color: rgba(0,113,227,0.55);
+    background: rgba(0,113,227,0.08);
+    box-shadow: 0 0 0 3px rgba(0,113,227,0.1);
+  }
+  .mode-card-title {
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: var(--text-primary);
+  }
+  .mode-card-model {
+    font: 600 11px/1 ui-monospace, "SF Mono", Menlo, monospace;
+    color: var(--accent);
+  }
   .quick-steps {
     position: relative;
     z-index: 1;
@@ -380,24 +533,39 @@
     font: inherit;
     flex-shrink: 0;
   }
-  .model-edit-row { display: flex; gap: 6px; margin-top: 5px; }
+  .model-edit-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 6px;
+    align-items: center;
+    width: 100%;
+  }
   .model-input {
-    min-width: 0;
-    flex: 1;
+    min-width: 220px;
+    width: 100%;
+    max-width: 100%;
+    flex: 1 1 280px;
     border: 1.5px solid var(--accent);
-    border-radius: 7px;
-    padding: 5px 7px;
-    font: 12px ui-monospace, "SF Mono", Menlo, monospace;
+    border-radius: 10px;
+    padding: 10px 12px;
+    font: 14px/1.4 ui-monospace, "SF Mono", Menlo, monospace;
     outline: none;
+    box-sizing: border-box;
+  }
+  .model-input:focus {
+    box-shadow: 0 0 0 3px rgba(0,113,227,0.15);
   }
   .model-save-btn {
     border: none;
-    border-radius: 7px;
-    padding: 5px 8px;
+    border-radius: 10px;
+    padding: 10px 16px;
     background: var(--accent);
     color: white;
-    font-size: 12px;
+    font-size: 13px;
+    font-weight: 600;
     cursor: pointer;
+    flex-shrink: 0;
   }
   .provider-reveal {
     display: flex;
@@ -429,7 +597,164 @@
   .badge-relay { background: rgba(255,159,10,0.14); color: #b26200; }
   .badge-observation { background: rgba(255,59,48,0.12); color: #d70015; }
   .badge-paid { background: rgba(175,82,222,0.12); color: #8e44ad; }
+  .badge-billing-free { background: rgba(48,209,88,0.14); color: #1a7f37; }
+  .badge-billing-trial { background: rgba(0,113,227,0.12); color: #0060c0; }
+  .badge-billing-free_plus_paid { background: rgba(90,200,250,0.18); color: #0a6a8a; }
+  .badge-billing-free_or_trial { background: rgba(48,209,88,0.1); color: #2d6a3e; }
   .badge-stack { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+
+  .pricing-panel {
+    background: rgba(0,0,0,0.025);
+    border: 1px solid rgba(0,0,0,0.06);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--text-secondary);
+  }
+  .pricing-panel-head {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 6px;
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    align-items: baseline;
+    flex-wrap: wrap;
+  }
+  .pricing-panel-head a {
+    font-weight: 500;
+    color: var(--accent);
+    text-decoration: none;
+    font-size: 12px;
+  }
+  .pricing-panel-head a:hover { text-decoration: underline; }
+  .pricing-panel .how-free { color: var(--text-secondary); }
+  .pricing-panel .pricing-extra {
+    margin-top: 6px;
+    color: var(--text-tertiary);
+    font-size: 11.5px;
+  }
+
+  /* 同公司多模型：精简常显，无展开/收起 */
+  .model-catalog {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 2px;
+    width: 100%;
+  }
+  .model-select.compact {
+    max-width: 100%;
+    font-size: 12px;
+    padding: 5px 8px;
+  }
+  .card.is-compact .card-top { margin-bottom: 0; }
+  .card.is-compact .divider { margin: 8px 0; }
+  .card.is-compact .card-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+  .meta-row.compact-meta {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    gap: 8px;
+  }
+  .model-chip-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .model-chip {
+    appearance: none;
+    border: 1px solid rgba(0,0,0,0.1);
+    background: rgba(255,255,255,0.7);
+    border-radius: 999px;
+    padding: 3px 8px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    line-height: 1.25;
+    max-width: 100%;
+  }
+  .model-chip:hover {
+    border-color: var(--accent);
+    color: var(--text-primary);
+  }
+  .model-chip.is-active {
+    background: rgba(0,113,227,0.1);
+    border-color: rgba(0,113,227,0.35);
+    color: #0071e3;
+    font-weight: 600;
+  }
+  .model-chip .tier-dot {
+    display: inline-block;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    margin-right: 4px;
+    vertical-align: middle;
+  }
+  .model-shared-key-hint {
+    font-size: 10.5px;
+    color: var(--text-tertiary);
+    line-height: 1.35;
+  }
+  .pricing-panel, .smooth-panel, .quota-panel, .billing-panel {
+    padding: 8px 10px;
+    font-size: 11.5px;
+  }
+  .smooth-panel { padding: 6px 8px; }
+
+  .badge-smooth-smooth { background: rgba(48,209,88,0.16); color: #1a7f37; }
+  .badge-smooth-busy { background: rgba(255,159,10,0.16); color: #b26200; }
+  .badge-smooth-mixed { background: rgba(0,113,227,0.1); color: #0060c0; }
+  .badge-smooth-unknown { background: rgba(0,0,0,0.06); color: var(--text-tertiary); }
+  .badge-higher-tier {
+    background: rgba(107,33,168,0.12);
+    color: #6b21a8;
+    font-weight: 600;
+  }
+  .badge-has-elite {
+    background: rgba(107,33,168,0.2);
+    color: #5b1a96;
+    font-weight: 700;
+  }
+  .badge-free-reset {
+    background: rgba(48,209,88,0.14);
+    color: #1a7f37;
+    font-weight: 600;
+  }
+  .badge-free-once {
+    background: rgba(255,159,10,0.16);
+    color: #9a5b00;
+    font-weight: 600;
+  }
+  .smooth-panel {
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text-secondary);
+    background: rgba(48,209,88,0.06);
+    border: 1px solid rgba(48,209,88,0.12);
+    border-radius: var(--radius-sm);
+    padding: 8px 10px;
+  }
+  .smooth-panel.is-busy {
+    background: rgba(255,159,10,0.08);
+    border-color: rgba(255,159,10,0.18);
+  }
+  .smooth-panel.is-unknown {
+    background: rgba(0,0,0,0.03);
+    border-color: rgba(0,0,0,0.06);
+  }
+  .smooth-panel-title { font-weight: 600; color: var(--text-primary); margin-bottom: 2px; }
+  .model-chip .smooth-mini {
+    font-size: 10px;
+    margin-left: 4px;
+    opacity: 0.85;
+  }
 
   .card.is-optimal {
     box-shadow: 0 0 0 2px var(--amber), var(--shadow-card);
@@ -613,18 +938,139 @@
     font-size: 14px;
   }
 
+  /* ── 额度主面板（卡片最前，数字优先）──────────────── */
+  .quota-panel {
+    margin: 8px 0 0;
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: rgba(0,113,227,0.05);
+    border: 1px solid rgba(0,113,227,0.12);
+  }
+  .quota-panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 8px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-primary);
+  }
+  .quota-panel-head a {
+    font-weight: 600;
+    font-size: 11px;
+    color: var(--accent);
+    text-decoration: none;
+  }
+  .quota-panel-head a:hover { text-decoration: underline; }
+  .quota-rows { display: flex; flex-direction: column; gap: 6px; }
+  .quota-row {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 2px 12px;
+    align-items: center;
+    font-size: 12px;
+  }
+  .quota-row-val {
+    order: -1;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+    font-size: 15px;
+    min-width: 4.5em;
+    letter-spacing: -0.02em;
+  }
+  .quota-row-label { color: var(--text-secondary); font-weight: 500; font-size: 12px; }
+  .quota-row-tag {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-tertiary);
+    opacity: 0.85;
+  }
+  .quota-bar {
+    grid-column: 1 / -1;
+    height: 4px;
+    border-radius: 999px;
+    background: rgba(120, 120, 128, 0.16);
+    overflow: hidden;
+  }
+  .quota-bar > i {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--green);
+  }
+  .quota-note {
+    margin-top: 8px;
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--text-tertiary);
+  }
+
+  .billing-panel {
+    margin-top: 10px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: linear-gradient(135deg, rgba(175, 82, 222, 0.08), rgba(0, 113, 227, 0.06));
+    border: 1px solid rgba(175, 82, 222, 0.18);
+  }
+  .billing-panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 6px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-secondary);
+  }
+  .billing-panel-head button {
+    border: none;
+    background: rgba(0, 113, 227, 0.1);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    padding: 4px 8px;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  .billing-line {
+    font-size: 13px;
+    font-weight: 650;
+    color: var(--text-primary);
+    margin-top: 4px;
+  }
+  .billing-sub {
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--text-tertiary);
+    line-height: 1.4;
+  }
+  .billing-line.ok { color: #1c7f3b; }
+  .billing-line.bad { color: #c42b23; }
+
+  @media (max-width: 900px) {
+    .hero { grid-template-columns: 1fr; align-items: start; }
+    .hero-metrics { width: 100%; }
+  }
+
   @media (max-width: 640px) {
     .page { padding: 32px 16px 80px; }
-    .hero { flex-direction: column; align-items: flex-start; }
     .hero h1 { font-size: 34px; }
+    .hero-metrics { grid-template-columns: 1fr; }
     .hero-stats {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 18px 12px;
       width: 100%;
       max-width: none;
     }
     .hero-stat { text-align: left; }
+    .hero-stat .num { font-size: 24px; }
+    .today-stats {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
     .api-panel { padding: 19px; border-radius: 20px; }
     .api-panel-header { flex-direction: column; gap: 12px; }
     .api-config-grid { grid-template-columns: 1fr; }
@@ -642,14 +1088,16 @@
         <h1>AI API 控制台</h1>
         <p>一个端口，完成 API 调用、渠道配置与用量管理。</p>
       </div>
-      <div class="hero-stats" id="heroStats"></div>
+      <div class="hero-metrics">
+        <div class="hero-stats" id="heroStats"></div>
+        <aside class="today-stats" id="todayStats" aria-label="今日用量"></aside>
+      </div>
     </div>
 
     <section class="api-panel" aria-labelledby="apiPanelTitle">
       <div class="api-panel-header">
         <div>
           <h2 class="api-panel-title" id="apiPanelTitle">连接到统一 API</h2>
-          <p class="api-panel-subtitle">兼容 OpenAI SDK；网页和接口现在都使用 4000 端口。</p>
         </div>
         <div class="status-pill" id="gatewayStatus" role="status">
           <span class="status-dot" aria-hidden="true"></span>
@@ -665,31 +1113,76 @@
           </div>
         </div>
         <div class="api-config-item">
-          <div class="api-config-label">推荐模型</div>
+          <div class="api-config-label">当前模式 model</div>
           <div class="api-config-value-row">
-            <code class="api-config-value">auto-route</code>
-            <button class="copy-btn" type="button" onclick="copyValue('auto-route', '模型名')">复制</button>
-          </div>
-        </div>
-        <div class="api-config-item">
-          <div class="api-config-label">客户端密钥（仅显示一次）</div>
-          <div class="api-config-value-row">
-            <code class="api-config-value" id="clientKeyValue">尚未创建</code>
-            <button class="copy-btn" id="clientKeyButton" type="button"
-                    onclick="handleClientKeyButton()">创建密钥</button>
+            <code class="api-config-value" id="selectedModeValue">auto-route</code>
+            <button class="copy-btn" type="button" onclick="copySelectedMode()">复制</button>
           </div>
         </div>
       </div>
+
+      <div class="mode-picker" id="modePicker" role="radiogroup" aria-label="路由模式">
+        <button type="button" class="mode-card active" data-mode="auto-route" onclick="selectMode('auto-route')"
+                title="先判提问强度，再选弱/中/强/顶级">
+          <span class="mode-card-title">智能</span>
+          <span class="mode-card-model">auto-route</span>
+        </button>
+        <button type="button" class="mode-card" data-mode="mode-weak" onclick="selectMode('mode-weak')"
+                title="0.5B–8B · 分类摘要简单问答">
+          <span class="mode-card-title">弱</span>
+          <span class="mode-card-model">mode-weak</span>
+        </button>
+        <button type="button" class="mode-card" data-mode="mode-mid" onclick="selectMode('mode-mid')"
+                title="9B–30B · 写作翻译普通编程">
+          <span class="mode-card-title">中</span>
+          <span class="mode-card-model">mode-mid</span>
+        </button>
+        <button type="button" class="mode-card" data-mode="mode-strong" onclick="selectMode('mode-strong')"
+                title="31B–100B · 复杂写作代码分析">
+          <span class="mode-card-title">强</span>
+          <span class="mode-card-model">mode-strong</span>
+        </button>
+        <button type="button" class="mode-card" data-mode="mode-elite" onclick="selectMode('mode-elite')"
+                title="100B+ · 推理长文项目规划">
+          <span class="mode-card-title">顶级</span>
+          <span class="mode-card-model">mode-elite</span>
+        </button>
+      </div>
+
+      <div class="api-keys-section">
+        <div class="api-keys-head">
+          <h3 class="api-keys-title">API 密钥</h3>
+          <button class="copy-btn" type="button" onclick="loadClientKeys()">刷新</button>
+        </div>
+        <p class="api-keys-hint" id="apiKeysHint">
+          记忆在<strong>项目文件</strong>里，不在浏览器：完整密钥写入
+          <code>state/client-keys.json</code>，上游渠道 Key 写入 <code>.env</code>。
+          换电脑/清缓存后，只要项目目录还在，列表仍可复制。
+        </p>
+        <div class="api-keys-create-row">
+          <input id="clientKeyName" class="api-key-name-input" type="text"
+                 placeholder="密钥名称（可选，如 Codex / Cursor）" maxlength="64" autocomplete="off" />
+          <button class="copy-btn" id="clientKeyButton" type="button"
+                  style="padding:9px 14px;font-size:13px"
+                  onclick="handleClientKeyButton()">创建密钥</button>
+        </div>
+        <code class="api-config-value" id="clientKeyValue" hidden>尚未创建</code>
+        <div class="api-keys-list" id="clientKeysList">
+          <div class="api-keys-empty">加载中…</div>
+        </div>
+      </div>
+
       <div class="quick-steps" aria-label="快速使用步骤">
-        <span class="quick-step"><span class="step-number">1</span>在下方填写上游 Key 与模型名</span>
-        <span class="quick-step"><span class="step-number">2</span>再次运行 bash run.sh 应用</span>
-        <span class="quick-step"><span class="step-number">3</span>创建密钥并填入客户端</span>
+        <span class="quick-step"><span class="step-number">1</span>在下方填写上游 Key（保存后自动热加载）</span>
+        <span class="quick-step"><span class="step-number">2</span>创建客户端密钥</span>
+        <span class="quick-step"><span class="step-number">3</span>客户端填 Base URL + 密钥即可调用</span>
       </div>
     </section>
 
     <div class="toolbar">
       <div class="tabs" id="tabs">
         <button class="tab active" data-tier="全部">全部</button>
+        <button class="tab" data-tier="顶级">顶级</button>
         <button class="tab" data-tier="强">强</button>
         <button class="tab" data-tier="中">中</button>
         <button class="tab" data-tier="弱">弱</button>
@@ -711,13 +1204,21 @@
 
   <div id="toast"></div>
 
+<!-- morphdom: GitHub patrick-steele-idem/morphdom — 就地 DOM diff，避免 innerHTML 整页替换丢焦点 -->
+<script src="/static/morphdom.min.js"></script>
 <script>
-const TIER_ORDER = ["强", "中", "弱"];
-const TIER_COLOR = { "强": "var(--purple)", "中": "var(--accent)", "弱": "var(--teal)" };
+const TIER_ORDER = ["顶级", "强", "中", "弱"];
+const TIER_COLOR = {
+  "顶级": "#6b21a8",
+  "强": "var(--purple)",
+  "中": "var(--accent)",
+  "弱": "var(--teal)",
+};
 const TIER_DESC = {
-  "强": "复杂任务（重构/架构/安全审计）— 大模型渠道",
-  "中": "常规任务的默认档位 — 通用免费渠道",
-  "弱": "简短问答/闲聊 — 超快小模型渠道",
+  "顶级": "约 100B+ — 复杂推理 / 长文本 / 项目规划（不保证必胜优秀小模型）",
+  "强": "约 31B–100B — 复杂写作 / 代码分析 / 多条件；70B 通常属强",
+  "中": "约 9B–30B — 日常写作 / 翻译 / 普通编程",
+  "弱": "约 0.5B–8B — 分类 / 提取 / 摘要 / 简单问答",
 };
 const TRUST_LABEL = {
   official: "官方直营",
@@ -727,16 +1228,43 @@ const TRUST_LABEL = {
 };
 const API_BASE = `${window.location.protocol}//${window.location.hostname}:4000/v1`;
 
+/** 路由模式：智能按提问选档；弱/中/强只用对应池（敏感内容仍走官方池） */
+const ROUTE_MODES = {
+  "auto-route": { label: "智能", model: "auto-route" },
+  "mode-weak": { label: "弱", model: "mode-weak" },
+  "mode-mid": { label: "中", model: "mode-mid" },
+  "mode-strong": { label: "强", model: "mode-strong" },
+  "mode-elite": { label: "顶级", model: "mode-elite" },
+};
+
 let channels = [];
 let activeTier = "全部";
 let tickInterval = null;
 let searchQuery = "";
 let generatedClientKey = "";
+let selectedMode = "auto-route";
 const collapsedTiers = new Set();
 const expandedCompanyTiers = new Set();
-const selectedProviderModels = new Map();
+/** 公司卡片内：选中的 channel_id（模型+账号） */
+const selectedCompanyChannel = new Map();
 
 document.getElementById("apiBaseValue").textContent = API_BASE;
+
+function selectMode(mode) {
+  if (!ROUTE_MODES[mode]) return;
+  selectedMode = mode;
+  document.querySelectorAll(".mode-card").forEach((el) => {
+    el.classList.toggle("active", el.dataset.mode === mode);
+  });
+  const val = document.getElementById("selectedModeValue");
+  if (val) val.textContent = ROUTE_MODES[mode].model;
+  showToast(`已选${ROUTE_MODES[mode].label}模式 · model=${ROUTE_MODES[mode].model}`);
+}
+
+function copySelectedMode() {
+  const model = (ROUTE_MODES[selectedMode] || ROUTE_MODES["auto-route"]).model;
+  copyValue(model, "模型名");
+}
 
 async function copyValue(value, label) {
   try {
@@ -747,34 +1275,232 @@ async function copyValue(value, label) {
   }
 }
 
+let clientKeys = [];
+
 async function handleClientKeyButton() {
-  if (generatedClientKey) {
-    await copyValue(generatedClientKey, "客户端密钥");
-    return;
-  }
   const button = document.getElementById("clientKeyButton");
   const value = document.getElementById("clientKeyValue");
+  const nameInput = document.getElementById("clientKeyName");
+  const name = (nameInput && nameInput.value.trim()) || "";
   button.disabled = true;
+  const prev = button.textContent;
   button.textContent = "创建中…";
   try {
     const response = await apiFetch("/api/client-keys", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: "{}",
+      body: JSON.stringify(name ? { name } : {}),
     });
     const data = await response.json();
     if (!response.ok || !data.key) throw new Error(data.detail || "创建失败");
     generatedClientKey = data.key;
-    value.textContent = generatedClientKey;
-    value.title = `${data.alias || "客户端密钥"} · 完整密钥刷新后不再显示`;
-    button.textContent = "复制";
-    showToast(data.message || "密钥已创建，请立即复制保存");
+    if (value) {
+      value.textContent = generatedClientKey;
+      value.hidden = false;
+    }
+    try { await navigator.clipboard.writeText(data.key); } catch (_) {}
+    if (nameInput) nameInput.value = "";
+    showToast(data.message || "密钥已创建并加入下方列表");
+    await loadClientKeys();
   } catch (error) {
-    value.textContent = "创建失败";
-    button.textContent = "重试";
+    if (value) value.textContent = "创建失败";
     showToast(error.message || "客户端密钥创建失败");
   } finally {
     button.disabled = false;
+    button.textContent = prev || "创建密钥";
+  }
+}
+
+async function loadClientKeys() {
+  const el = document.getElementById("clientKeysList");
+  if (!el) return;
+  try {
+    const res = await apiFetch("/api/client-keys");
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "加载失败");
+    clientKeys = data.keys || [];
+    const hint = document.getElementById("apiKeysHint");
+    if (hint && data.store_path) {
+      hint.innerHTML =
+        `记忆在<strong>项目文件</strong>里，不在浏览器：完整密钥写入 <code>${esc(data.store_path)}</code>；`
+        + `上游渠道 Key 写入项目 <code>.env</code>。当前列表 <strong>${clientKeys.length}</strong> 把。`;
+    }
+    renderClientKeysList();
+  } catch (e) {
+    el.innerHTML = `<div class="api-keys-empty">${esc(e.message || "无法加载密钥列表")}</div>`;
+  }
+}
+
+function renderClientKeysList() {
+  const el = document.getElementById("clientKeysList");
+  if (!el) return;
+  if (!clientKeys.length) {
+    el.innerHTML = `<div class="api-keys-empty">还没有项目侧密钥。点「创建密钥」后会写入 state/client-keys.json，下次打开仍在。</div>`;
+    return;
+  }
+  el.innerHTML = clientKeys.map((k) => {
+    // 复制优先用项目登记簿 id（local_id / id），绝不用浏览器缓存
+    const rawId = k.local_id || k.id || k.alias || "";
+    const id = esc(rawId);
+    const canReveal = !!(k.has_secret || k.store === "project" || k.local_id);
+    const models = (k.models || ["auto-route"]).join(", ");
+    const rpm = k.rpm_limit != null ? ` · ${k.rpm_limit} RPM` : "";
+    const badge = canReveal
+      ? `<span style="color:#1c7f3b;font-size:11px;font-weight:700">项目已保存</span>`
+      : `<span style="color:#b26200;font-size:11px;font-weight:700">仅网关记录</span>`;
+    return `
+      <div class="api-key-row">
+        <div>
+          <div class="api-key-row-title">${esc(k.alias || "未命名")} · ${badge}</div>
+          <div class="api-key-row-meta">${esc(k.key_preview || "sk-…")} · ${esc(models)}${rpm}</div>
+          <div class="api-key-row-meta" id="probe-client-${cssId(rawId)}" style="margin-top:4px"></div>
+        </div>
+        <div class="api-key-row-actions">
+          ${canReveal
+            ? `<button class="copy-btn" type="button" onclick="probeClientKey('${id}')">检查连接</button>
+               <button class="copy-btn" type="button" onclick="revealAndCopyKey('${id}')">复制</button>`
+            : `<span class="copy-btn" style="opacity:.5;cursor:default" title="无完整密钥，无法探测/复制">—</span>`}
+          <button class="copy-btn" type="button" style="color:var(--red);background:rgba(255,59,48,0.1)"
+                  onclick="deleteClientKey('${id}', '${esc(k.alias || "").replace(/'/g, "")}')">删除</button>
+        </div>
+      </div>`;
+  }).join("");
+}
+
+async function revealAndCopyKey(keyId) {
+  try {
+    const res = await apiFetch(`/api/client-keys/${encodeURIComponent(keyId)}/reveal`);
+    const data = await res.json();
+    if (!res.ok || !data.key) {
+      throw new Error(data.detail || "项目登记簿中没有完整密钥（可能创建时写盘失败）");
+    }
+    await copyValue(data.key, "密钥");
+  } catch (e) {
+    showToast(e.message || "复制失败");
+  }
+}
+
+async function probeClientKey(keyId) {
+  const slot = document.getElementById(`probe-client-${cssId(keyId)}`);
+  if (slot) slot.textContent = "检查中…";
+  showToast("正在检查客户端密钥连接…");
+  try {
+    const res = await apiFetch(`/api/client-keys/${encodeURIComponent(keyId)}/probe`, { method: "POST" });
+    const data = await res.json();
+    const ok = res.ok && data.ok;
+    const msg = ok
+      ? `✓ 连接正常 · ${data.latency_ms ?? "—"}ms · ${data.message || "OK"}`
+      : `✗ ${data.message || data.detail || "连接失败"}`;
+    if (slot) {
+      slot.style.color = ok ? "#1c7f3b" : "#c42b23";
+      slot.textContent = msg;
+    }
+    showToast(msg);
+  } catch (e) {
+    if (slot) {
+      slot.style.color = "#c42b23";
+      slot.textContent = e.message || "检查失败";
+    }
+    showToast(e.message || "检查失败");
+  }
+}
+
+async function deleteClientKey(keyId, alias) {
+  const label = alias || keyId;
+  if (!window.confirm(`确定删除密钥「${label}」？\n将从项目登记簿与网关一并移除，不可恢复。`)) {
+    return;
+  }
+  try {
+    const res = await apiFetch(`/api/client-keys/${encodeURIComponent(keyId)}`, { method: "DELETE" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || "删除失败");
+    showToast(data.message || "已删除");
+    await loadClientKeys();
+  } catch (e) {
+    showToast(e.message || "删除失败");
+  }
+}
+
+/** 各渠道最近一次连接检查结果（跨 morph 重绘仍保留） */
+const lastProbeByChannel = new Map();
+
+function formatProbeMessage(probe) {
+  if (!probe) return "";
+  if (probe.ok) {
+    return `✓ 连接正常 · ${probe.latency_ms ?? "—"}ms · ${probe.message || "OK"}`;
+  }
+  const raw = String(probe.message || probe.detail || "请检查 Key / 额度 / 网络");
+  // 智谱等免费层「访问量过大」是常态：说明为临时拥挤，不是 Key 作废
+  const busy = /访问量过大|稍后再试|系统繁忙|服务繁忙|overloaded|rate limit|429|too many requests|限流|频率/i.test(raw);
+  if (busy) {
+    return `⏳ 暂时拥挤 · ${raw}（免费层常见，稍后/下一次请求仍会再试，不会永久弃用）`;
+  }
+  return `✗ 连接失败 · ${raw}`;
+}
+
+function showProbeOnCard(channelId, probe) {
+  lastProbeByChannel.set(channelId, probe || null);
+  const slot = document.getElementById(`probe-channel-${cssId(channelId)}`);
+  if (!slot) return;
+  const msg = formatProbeMessage(probe);
+  if (!msg) {
+    slot.style.display = "none";
+    slot.textContent = "";
+    return;
+  }
+  slot.style.display = "block";
+  slot.style.color = probe && probe.ok ? "#1c7f3b" : "#c42b23";
+  slot.textContent = msg;
+}
+
+function restoreProbeSlots() {
+  for (const [channelId, probe] of lastProbeByChannel.entries()) {
+    showProbeOnCard(channelId, probe);
+  }
+}
+
+async function probeChannel(channelId) {
+  const slot = document.getElementById(`probe-channel-${cssId(channelId)}`);
+  if (slot) {
+    slot.style.display = "block";
+    slot.textContent = "检查中…";
+    slot.style.color = "var(--text-tertiary)";
+  }
+  showToast("正在检查该厂商 API 连接…");
+  try {
+    const res = await apiFetch(`/api/channels/${encodeURIComponent(channelId)}/probe`, { method: "POST" });
+    let data = {};
+    try { data = await res.json(); } catch (_) { data = { ok: false, message: `HTTP ${res.status}` }; }
+    if (!res.ok && data.detail && !data.message) {
+      data = { ok: false, message: typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail) };
+    }
+    const probe = {
+      ok: !!(res.ok && (data.ok || data.connection_ok)),
+      latency_ms: data.latency_ms,
+      message: data.message || data.detail || (res.ok ? "OK" : "失败"),
+      label: data.label,
+      model: data.model,
+      http_status: data.http_status || res.status,
+    };
+    showProbeOnCard(channelId, probe);
+    const ch = channels.find(c => c.channel_id === channelId);
+    if (ch) {
+      ch.connection_ok = probe.ok;
+      ch.connection_message = probe.message || "";
+      const cid = ch.company_id || ch.env_var;
+      channels.forEach(c => {
+        if ((c.company_id || c.env_var) === cid) c.connection_ok = probe.ok;
+      });
+    }
+    renderHeroStats();
+    showToast(formatProbeMessage(probe));
+    return probe;
+  } catch (e) {
+    const probe = { ok: false, message: e.message || "检查失败" };
+    showProbeOnCard(channelId, probe);
+    renderHeroStats();
+    showToast(formatProbeMessage(probe));
+    return probe;
   }
 }
 
@@ -814,16 +1540,110 @@ function esc(value) {
   })[ch]);
 }
 
-async function fetchChannels() {
-  try {
-    const res = await apiFetch("/api/channels");
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    channels = data.channels || [];
-    render();
-  } catch (e) {
-    document.getElementById("content").innerHTML =
-      `<div class="empty-state">无法连接到仪表盘后端，确认 dashboard 容器是否已启动。</div>`;
+let renderQueued = false;
+
+/**
+ * 社区共识根因（React issues / morphdom README）：
+ * 轮询用 container.innerHTML = html 会销毁输入框节点 → 焦点/选区丢失。
+ * 正解：用稳定 id 做 DOM morph（morphdom / idiomorph），就地更新；
+ * 正在编辑的卡片整支跳过更新。
+ * https://github.com/patrick-steele-idem/morphdom
+ */
+function cardHasOpenEditor(el) {
+  return !!(el && el.querySelector && el.querySelector(
+    ".key-input, .model-input, .priority-input, .optimal-form"
+  ));
+}
+
+function applyChannelHtml(html, options = {}) {
+  const root = document.getElementById("content");
+  if (!root) return;
+  const force = !!options.force;
+  if (typeof morphdom !== "function") {
+    // 无 morphdom：force 时强制整页替换；否则编辑中跳过
+    if (!force && (cardHasOpenEditor(root) || (document.activeElement && root.contains(document.activeElement)
+        && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)))) {
+      renderQueued = true;
+      return;
+    }
+    root.innerHTML = html;
+    return;
+  }
+  const toNode = document.createElement("div");
+  toNode.id = "content";
+  toNode.innerHTML = html;
+  morphdom(root, toNode, {
+    childrenOnly: true,
+    getNodeKey(node) {
+      if (!node || node.nodeType !== 1) return undefined;
+      return node.id || undefined;
+    },
+    onBeforeElUpdated(fromEl, toEl) {
+      if (fromEl.nodeType !== 1) return true;
+      // 强制刷新（保存成功后）：必须替换，否则编辑框关不掉
+      if (force) return true;
+      // 焦点在输入控件上：保留节点，不替换
+      if (document.activeElement === fromEl
+          && /^(INPUT|TEXTAREA|SELECT)$/i.test(fromEl.tagName || "")) {
+        return false;
+      }
+      // 卡片内有打开的编辑表单：整卡跳过
+      if (fromEl.classList && fromEl.classList.contains("card") && cardHasOpenEditor(fromEl)) {
+        return false;
+      }
+      return true;
+    },
+    onBeforeNodeDiscarded(node) {
+      if (node.nodeType !== 1) return true;
+      if (force) return true;
+      if (cardHasOpenEditor(node)) return false;
+      if (document.activeElement && node.contains && node.contains(document.activeElement)) {
+        return false;
+      }
+      return true;
+    },
+  });
+}
+
+async function fetchChannels(options = {}) {
+  const retries = options.retries != null ? options.retries : 2;
+  const force = !!options.force;
+  let lastErr = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await apiFetch("/api/channels");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      channels = data.channels || [];
+      try {
+        // force=true：保存成功后强制关掉编辑框并整卡更新
+        render({ preserveScroll: true, force });
+      } catch (renderErr) {
+        // 数据已取到：勿误报「连不上后端」
+        console.error("render failed", renderErr);
+        const root = document.getElementById("content");
+        if (root && !cardHasOpenEditor(root)) {
+          root.innerHTML =
+            `<div class="empty-state">页面渲染出错：${esc(renderErr.message || renderErr)}`
+            + `<div class="hint">后端正常；请刷新页面或查看控制台</div></div>`;
+        }
+      }
+      return;
+    } catch (e) {
+      lastErr = e;
+      if (attempt < retries) {
+        await new Promise(r => setTimeout(r, 400 * (attempt + 1)));
+        continue;
+      }
+    }
+  }
+  const root = document.getElementById("content");
+  if (root && !cardHasOpenEditor(root)) {
+    const detail = lastErr && lastErr.message ? esc(lastErr.message) : "网络错误";
+    root.innerHTML =
+      `<div class="empty-state">无法连接到仪表盘后端`
+      + `<div class="hint">确认已启动：bash run.sh · 打开 http://127.0.0.1:4000 或 :8080`
+      + `<br>详情：${detail}</div></div>`;
   }
 }
 
@@ -861,149 +1681,657 @@ function discoveryLabel(discovery) {
   return labels[discovery.status] || esc(discovery.status);
 }
 
-function renderRing(used, limit) {
+/** 顺畅时段标注（用一段使用后的成功/失败学习） */
+function smoothnessBadge(sm) {
+  if (!sm) return "";
+  const level = sm.label_level || "unknown";
+  const label = sm.label || "学习中";
+  return `<span class="badge badge-smooth-${level}" title="${esc(sm.hint_zh || "")}">${esc(label)}</span>`;
+}
+
+function renderSmoothPanel(sm) {
+  if (!sm) return "";
+  if (!sm.available || sm.label_level === "unknown") {
+    return `<div class="smooth-panel is-unknown">
+      <div class="smooth-panel-title">顺畅时段 · 学习中</div>
+      <div class="model-shared-key-hint">用一段时间后自动标注顺畅/拥挤钟点</div>
+    </div>`;
+  }
+  const level = sm.label_level || "unknown";
+  const cls = level === "busy" ? "is-busy" : "";
+  const best = (sm.best_hours || []).length ? `较顺 ${formatHourList(sm.best_hours)}` : "";
+  const worst = (sm.worst_hours || []).length ? `易堵 ${formatHourList(sm.worst_hours)}` : "";
+  const extra = [best, worst].filter(Boolean).join(" · ");
+  return `<div class="smooth-panel ${cls}" title="${esc(sm.hint_zh || "")}">
+    <div class="smooth-panel-title">顺畅 · ${esc(sm.label || "")}</div>
+    <div class="model-shared-key-hint">${esc(extra || sm.hint_zh || "")}</div>
+  </div>`;
+}
+
+function formatHourList(hours) {
+  if (!hours || !hours.length) return "";
+  const sorted = [...new Set(hours.map(Number))].sort((a, b) => a - b);
+  const ranges = [];
+  let s = sorted[0], p = sorted[0];
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i] === p + 1) { p = sorted[i]; continue; }
+    ranges.push(s === p ? `${s}点` : `${s}–${p}点`);
+    s = p = sorted[i];
+  }
+  ranges.push(s === p ? `${s}点` : `${s}–${p}点`);
+  return ranges.join("、");
+}
+
+/** 公司维度：汇总各模型顺畅标注，优先展示「顺畅」 */
+function companySmoothness(items) {
+  const list = (items || []).map(c => c.smoothness).filter(s => s && s.available);
+  if (!list.length) return null;
+  const rank = { smooth: 3, mixed: 2, busy: 1, unknown: 0 };
+  list.sort((a, b) => (rank[b.label_level] || 0) - (rank[a.label_level] || 0));
+  // 合并 best/worst hours
+  const best = new Set();
+  const worst = new Set();
+  let samples = 0;
+  for (const s of list) {
+    (s.best_hours || []).forEach(h => best.add(h));
+    (s.worst_hours || []).forEach(h => worst.add(h));
+    samples += s.recent_samples || 0;
+  }
+  const top = list[0];
+  return {
+    ...top,
+    best_hours: [...best].sort((a, b) => a - b),
+    worst_hours: [...worst].sort((a, b) => a - b),
+    recent_samples: samples,
+    hint_zh: top.hint_zh || "",
+  };
+}
+
+function renderRing(used, limit, channelId) {
   const r = 26;
   const c = 2 * Math.PI * r;
   const pct = limit ? Math.min(100, Math.round((used / limit) * 100)) : 0;
   const offset = c - (pct / 100) * c;
   const color = ringColor(pct);
+  const idAttr = channelId ? ` data-ring-id="${cssId(channelId)}"` : "";
   return `
-    <div class="ring-wrap">
+    <div class="ring-wrap"${idAttr}>
       <svg width="64" height="64" viewBox="0 0 64 64">
         <circle class="ring-track" cx="32" cy="32" r="${r}"></circle>
-        <circle class="ring-progress" cx="32" cy="32" r="${r}"
+        <circle class="ring-progress" data-ring-progress cx="32" cy="32" r="${r}"
           stroke="${color}"
           stroke-dasharray="${c}"
           stroke-dashoffset="${offset}"></circle>
       </svg>
-      <div class="ring-center">${limit ? used + "/" + limit : "—"}</div>
+      <div class="ring-center" data-ring-center>${limit ? used + "/" + limit : "—"}</div>
     </div>`;
 }
 
-function providerGroupKey(tier, providerName) {
-  return `${tier}\u0000${providerName}`;
+function fmtQuotaNum(n) {
+  if (n === null || n === undefined) return "—";
+  const x = Number(n);
+  if (!Number.isFinite(x)) return "—";
+  if (x >= 1000000) return (x / 1000000).toFixed(x % 1000000 === 0 ? 0 : 1) + "M";
+  if (x >= 1000) return (x / 1000).toFixed(x % 1000 === 0 ? 0 : 1) + "K";
+  return String(x);
 }
 
-function groupChannelsByProvider(list, tier) {
+function windowBucket(sec) {
+  const s = Number(sec) || 0;
+  if (s === 0) return "并发";
+  if (s <= 60) return "分钟";
+  if (s <= 3600) return "小时";
+  if (s <= 86400) return "天";
+  if (s <= 604800) return "周";
+  return "月";
+}
+
+/** 按量付费：官方余额 + 本机消耗 */
+function renderBillingPanel(ch) {
+  const bi = ch.billing_info || {};
+  const isPaid = ch.billing === "paid" || bi.billing === "paid";
+  const official = bi.official;
+  const local = bi.local_spend || {};
+  const hasLocal = local.available && (local.day_cost != null || local.total_cost != null);
+  const hasOfficial = bi.supports_official_balance || (official && official.ok);
+
+  if (!isPaid && !hasOfficial && !hasLocal) return "";
+
+  let main = "";
+  if (official && official.ok) {
+    main = `<div class="billing-line ok">${esc(official.summary_zh || "已查询官方余额")}</div>`;
+    if (official.docs_url) {
+      main += `<div class="billing-sub"><a href="${esc(official.docs_url)}" target="_blank" rel="noopener">官方余额接口说明 →</a>${official.endpoint ? ` · ${esc(official.endpoint)}` : ""}</div>`;
+    }
+  } else if (official && !official.ok) {
+    main = `<div class="billing-line bad">官方余额查询失败：${esc(official.message || "未知错误")}</div>`;
+  } else if (isPaid) {
+    main = `<div class="billing-line">按量付费 · ${esc(bi.message || "暂无官方余额接口，见本机消耗")}</div>`;
+  }
+
+  let localLine = "";
+  if (hasLocal) {
+    const approx = local.cost_source === "estimated" ? "~" : "";
+    localLine = `<div class="billing-sub">本机统计消耗：今日 ${approx}${fmtMoney(local.day_cost) ?? "—"} · 累计 ${approx}${fmtMoney(local.total_cost) ?? "—"}（${local.cost_source === "estimated" ? "估算" : "记账"}）</div>`;
+  } else if (local.available && (local.day_tokens || local.total_tokens)) {
+    localLine = `<div class="billing-sub">本机 tokens：今日 ${fmtTokensM(local.day_tokens)} · 累计 ${fmtTokensM(local.total_tokens)}</div>`;
+  }
+
+  if (!main && !localLine) return "";
+
+  const refreshBtn = bi.supports_official_balance && ch.is_configured
+    ? `<button type="button" onclick="refreshBalance('${ch.channel_id}')">刷新余额</button>`
+    : "";
+
+  return `
+    <div class="billing-panel" id="billing-${cssId(ch.channel_id)}">
+      <div class="billing-panel-head">
+        <span>${isPaid ? "按量付费 · 余额 / 消耗" : "余额 / 消耗"}</span>
+        ${refreshBtn}
+      </div>
+      ${main}
+      ${localLine}
+    </div>`;
+}
+
+async function refreshBalance(channelId) {
+  showToast("正在查询官方余额…");
+  try {
+    const res = await apiFetch(`/api/channels/${encodeURIComponent(channelId)}/balance`, { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "查询失败");
+    const ch = channels.find(c => c.channel_id === channelId);
+    if (ch) ch.billing_info = data.billing_info;
+    const panel = document.getElementById(`billing-${cssId(channelId)}`);
+    if (panel && ch) {
+      // 用临时容器替换
+      const tmp = document.createElement("div");
+      tmp.innerHTML = renderBillingPanel(ch);
+      if (tmp.firstElementChild) panel.replaceWith(tmp.firstElementChild);
+    }
+    const off = (data.billing_info || {}).official;
+    showToast(off && off.ok ? (off.summary_zh || "余额已更新") : ((off && off.message) || "已刷新"));
+  } catch (e) {
+    showToast(e.message || "余额查询失败");
+  }
+}
+
+/**
+ * 额度主面板（卡片最前）：数字优先 0/200，标签在后。
+ * 不再与「本分钟/今日」圆环重复展示。
+ */
+function renderQuotaPanel(ch) {
+  const rl = ch.rate_limits || {};
+  let windows = Array.isArray(rl.windows) ? rl.windows.slice() : [];
+  if (!windows.length) {
+    windows = [{
+      id: "rpm", metric: "requests", window_sec: 60,
+      limit: ch.rpm_limit, used: (ch.usage || {}).calls_this_minute,
+      label_zh: "每分钟 (RPM)", usage_tracked: !!(ch.usage && ch.usage.available),
+      source: "config",
+    }];
+  }
+  const uid = cssId(ch.channel_id);
+  const rows = windows.map((w) => {
+    const label = w.label_zh || w.id || "限额";
+    const bucket = w.window_label || windowBucket(w.window_sec);
+    const limit = w.limit;
+    const used = w.used;
+    const hasLimit = limit != null && Number(limit) > 0;
+    // 有限额就显示 used/limit；无实时 used 时显示 0/limit
+    const usedNum = (used != null && Number.isFinite(Number(used))) ? Number(used) : 0;
+    const showFraction = hasLimit;
+    const val = showFraction
+      ? `${fmtQuotaNum(usedNum)}/${fmtQuotaNum(limit)}`
+      : (used != null ? `已用 ${fmtQuotaNum(used)}` : "—");
+    const pct = hasLimit
+      ? Math.min(100, Math.round((usedNum / Number(limit)) * 100))
+      : 0;
+    const color = ringColor(pct || 0);
+    const winId = String(w.id || label).replace(/[^a-zA-Z0-9_-]/g, "_");
+    return `
+      <div class="quota-row" data-quota-row="${uid}" data-quota-win="${esc(winId)}">
+        <div class="quota-row-val" data-quota-val title="${esc(label)}">${val}</div>
+        <div class="quota-row-label">${esc(label)}
+          <span class="quota-row-tag">${esc(bucket)}</span>
+        </div>
+        <div class="quota-bar" style="grid-column:1/-1"><i style="width:${hasLimit ? pct : 0}%;background:${color}"></i></div>
+      </div>`;
+  }).join("");
+  const docs = rl.docs_url
+    ? `<a href="${esc(rl.docs_url)}" target="_blank" rel="noopener">文档 →</a>`
+    : "";
+  const note = rl.note_zh
+    ? `<div class="quota-note">${esc(rl.note_zh)}</div>`
+    : "";
+  return `
+    <div class="quota-panel" data-quota-panel="${uid}">
+      <div class="quota-panel-head">
+        <span>额度</span>
+        ${docs}
+      </div>
+      <div class="quota-rows">${rows}</div>
+      ${note}
+    </div>`;
+}
+
+/** 档位「能力」排序：数字越小越强。顶级=0 … 弱=3 */
+const TIER_RANK = { "顶级": 0, "强": 1, "中": 2, "弱": 3 };
+
+function modelLabel(c) {
+  return (c && (c.model_display || c.model)) || "";
+}
+
+/** 可重置免费靠前，一次性免费靠后 */
+function freeQuotaRank(c) {
+  const k = (c && c.free_quota_kind) || "";
+  if (k === "resettable") return 0;
+  if (k === "once") return 2;
+  if (k === "paid") return 1;
+  return 1;
+}
+
+function modelSort(a, b) {
+  // 1) 优先级：数字越大越靠前，低优先级沉底
+  const pa = Number(a.priority ?? 0);
+  const pb = Number(b.priority ?? 0);
+  if (pa !== pb) return pb - pa;
+  // 2) 一次性免费沉底（同档内）
+  const fq = freeQuotaRank(a) - freeQuotaRank(b);
+  if (fq) return fq;
+  const ta = TIER_RANK[a.tier] ?? 9;
+  const tb = TIER_RANK[b.tier] ?? 9;
+  if (ta !== tb) return ta - tb;
+  const sa = (a.smoothness && a.smoothness.label_level === "smooth") ? 1 : 0;
+  const sb = (b.smoothness && b.smoothness.label_level === "smooth") ? 1 : 0;
+  if (sa !== sb) return sb - sa;
+  return channelOrder(a, b);
+}
+
+/** 公司用于排序的优先级：取相关模型里最高的 priority */
+function companyMaxPriority(items, focusTier) {
+  let pool = items || [];
+  if (focusTier && focusTier !== "全部") {
+    const inTier = pool.filter(c => c.tier === focusTier);
+    if (inTier.length) pool = inTier;
+  }
+  let max = 0;
+  for (const c of pool) {
+    const p = Number(c.priority ?? 0);
+    if (p > max) max = p;
+  }
+  return max;
+}
+
+/** 该公司具备的档位列表（按能力从高到低） */
+function companyTiers(items) {
+  return [...new Set((items || []).map(c => c.tier).filter(Boolean))]
+    .sort((a, b) => (TIER_RANK[a] ?? 9) - (TIER_RANK[b] ?? 9));
+}
+
+/** 比 focus 更高档的档位（例：看「强」时，顶级算更高） */
+function higherTiersThan(items, focusTier) {
+  if (!focusTier || focusTier === "全部") return [];
+  const fr = TIER_RANK[focusTier];
+  if (fr == null) return [];
+  return companyTiers(items).filter(t => (TIER_RANK[t] ?? 9) < fr);
+}
+
+/** 公司是否已填 Key（任一模型配置即可） */
+function companyIsConfigured(items) {
+  return (items || []).some(c => c.is_configured);
+}
+
+/** 公司是否挂有顶级模型（同账号多档 / 纯顶级都算） */
+function companyHasElite(items) {
+  return (items || []).some(c => c.tier === "顶级");
+}
+
+/**
+ * 在「非顶级」列表中：若该公司覆盖更高档（尤其已配顶级），要标出来。
+ * 文案：已配置顶级 / 另有顶级 / 已配置强档 …
+ * 「全部」视图：凡有顶级的公司也标「已配置/另有顶级」。
+ */
+function higherTierNote(items, focusTier) {
+  const configured = companyIsConfigured(items);
+  const prefix = configured ? "已配置" : "另有";
+
+  // 全部：有顶级就标（SambaNova / Cerebras / 硅基 / Groq / DeepSeek…）
+  if (!focusTier || focusTier === "全部") {
+    if (companyHasElite(items)) return `${prefix}顶级`;
+    const tiers = companyTiers(items);
+    if (tiers.length <= 1) return "";
+    return configured ? `已配置${tiers[0]}` : `最高${tiers[0]}`;
+  }
+
+  if (focusTier === "顶级") return "";
+
+  const higher = higherTiersThan(items, focusTier);
+  if (!higher.length) return "";
+  // 优先强调顶级（用户在顶级配过 Key 后，其它档统一显示「已配置顶级」）
+  if (higher.includes("顶级")) return `${prefix}顶级`;
+  if (higher.includes("强")) return `${prefix}强档`;
+  if (higher.includes("中")) return `${prefix}中档`;
+  return `${prefix}${higher[0]}`;
+}
+
+function higherTierBadge(items, focusTier) {
+  const note = higherTierNote(items, focusTier);
+  if (!note) return "";
+  const isTop = note.includes("顶级");
+  const title = isTop
+    ? "该公司挂有顶级模型；在非顶级列表中沉底，同组内按人工优先级排序"
+    : "该公司还覆盖更高档模型；在本档列表中沉底，同组内按人工优先级排序";
+  return `<span class="badge badge-higher-tier${isTop ? " badge-has-elite" : ""}" title="${esc(title)}">${esc(note)}</span>`;
+}
+
+// 兼容可能被缓存的错误调用名
+function higherTiersBadge(items, focusTier) { return higherTierBadge(items, focusTier); }
+function higherTiersNote(items, focusTier) { return higherTierNote(items, focusTier); }
+
+/**
+ * 沉底权重（「顶级」页本身不沉底；「全部 / 强 / 中 / 弱」均沉）
+ * 0 = 无顶级、且相对本档无更高档（本档主位）
+ * 1 = 另有更高但非顶级（例：看弱时另有中/强）
+ * 2 = 另有/挂有顶级（未填 Key）→ 靠后
+ * 3 = 已配置顶级 → 整表最后
+ *
+ * 覆盖：SambaNova / DeepSeek / Groq / 硅基 / Cerebras / Mistral / OpenRouter…
+ */
+function higherTierSinkScore(items, focusTier) {
+  if (focusTier === "顶级") return 0;
+
+  const configured = companyIsConfigured(items);
+  const hasElite = companyHasElite(items);
+
+  // 全部：只要挂了顶级就沉底（不区分是否还有弱/中/强）
+  if (!focusTier || focusTier === "全部") {
+    if (!hasElite) return 0;
+    return configured ? 3 : 2;
+  }
+
+  // 强 / 中 / 弱
+  const higher = higherTiersThan(items, focusTier);
+  if (hasElite || higher.includes("顶级")) {
+    return configured ? 3 : 2;
+  }
+  if (higher.length) return 1;
+  return 0;
+}
+
+/** 一公司一张卡：按 company_id 合并（跨档位、跨模型） */
+function groupChannelsByCompany(list) {
   const groups = new Map();
   for (const channel of list) {
-    const key = providerGroupKey(tier, channel.provider_name || "未命名服务商");
+    const key = channel.company_id || channel.env_var || channel.provider_name || "unknown";
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(channel);
   }
   const result = [...groups.entries()].map(([key, items]) => ({
     key,
-    items: items.sort(channelOrder),
+    company_id: key,
+    company_name: items[0].company_name || items[0].provider_name || key,
+    items: items.slice().sort(modelSort),
   }));
-  result.sort((a, b) => channelOrder(a.items[0], b.items[0]));
+  const smoothScore = (items) => {
+    const levels = { smooth: 3, mixed: 1, busy: 0, unknown: 0 };
+    let best = 0;
+    for (const c of items) {
+      const lv = (c.smoothness && c.smoothness.label_level) || "unknown";
+      best = Math.max(best, levels[lv] || 0);
+    }
+    return best;
+  };
+  /**
+   * 公司卡排序：
+   * 先执行「有上级档位则沉底」的硬分组；在同一沉底层级内，人工
+   * priority 是绝对第一排序键，再比较是否配置、额度、顺畅度与名称。
+   */
+  const onceOnlyScore = (items) => {
+    const kinds = items.map(c => c.free_quota_kind).filter(Boolean);
+    if (!kinds.length) return 0;
+    const hasReset = kinds.some(k => k === "resettable");
+    const hasOnce = kinds.some(k => k === "once");
+    if (hasOnce && !hasReset) return 1;
+    return 0;
+  };
+
+  result.sort((a, b) => {
+    // 硬规则：全部/强/中/弱视图中，有上级档位的公司必须沉底。
+    const sa = higherTierSinkScore(a.items, activeTier);
+    const sb = higherTierSinkScore(b.items, activeTier);
+    if (sa !== sb) return sa - sb;
+
+    // 同一沉底层级内，人工优先级权重最大。
+    const pa = companyMaxPriority(a.items, activeTier);
+    const pb = companyMaxPriority(b.items, activeTier);
+    if (pa !== pb) return pb - pa;
+
+    const ac = a.items.some(c => c.is_configured) ? 1 : 0;
+    const bc = b.items.some(c => c.is_configured) ? 1 : 0;
+    if (ac !== bc) return bc - ac;
+
+    const ao = onceOnlyScore(
+      activeTier && activeTier !== "全部"
+        ? a.items.filter(c => c.tier === activeTier)
+        : a.items
+    );
+    const bo = onceOnlyScore(
+      activeTier && activeTier !== "全部"
+        ? b.items.filter(c => c.tier === activeTier)
+        : b.items
+    );
+    if (ao !== bo) return ao - bo;
+
+    const ss = smoothScore(b.items) - smoothScore(a.items);
+    if (ss) return ss;
+    return String(a.company_name || "").localeCompare(String(b.company_name || ""), "zh-CN");
+  });
   return result;
 }
 
-function selectedChannelForProvider(group) {
-  const wanted = selectedProviderModels.get(group.key);
-  return group.items.find(channel => channel.channel_id === wanted) || group.items[0];
+function uniqueAccounts(items) {
+  const map = new Map();
+  for (const ch of items) {
+    const env = ch.env_var || "";
+    if (!map.has(env)) map.set(env, ch);
+  }
+  return [...map.values()].sort((a, b) => (a.account_index || 1) - (b.account_index || 1));
 }
 
-function selectProviderModel(encodedGroupKey, channelId) {
-  selectedProviderModels.set(decodeURIComponent(encodedGroupKey), channelId);
-  render();
+function selectedChannelForCompany(group) {
+  const wanted = selectedCompanyChannel.get(group.key);
+  if (wanted) {
+    const hit = group.items.find(c => c.channel_id === wanted);
+    if (hit) return hit;
+  }
+  // 当前筛选档内，人工优先级是绝对第一选择键。
+  let pool = group.items.slice().sort(modelSort);
+  if (activeTier !== "全部") {
+    const inTier = pool.filter(c => c.tier === activeTier);
+    if (inTier.length) pool = inTier;
+  }
+  pool.sort((a, b) =>
+    Number(b.priority ?? 0) - Number(a.priority ?? 0)
+    || Number(b.is_configured) - Number(a.is_configured)
+    || freeQuotaRank(a) - freeQuotaRank(b)
+    || modelSort(a, b)
+  );
+  return pool[0];
 }
 
-function toggleTierCompanies(tier) {
-  if (expandedCompanyTiers.has(tier)) expandedCompanyTiers.delete(tier);
-  else expandedCompanyTiers.add(tier);
-  render();
+function selectCompanyChannel(companyKey, channelId) {
+  selectedCompanyChannel.set(companyKey, channelId);
+  render({ preserveScroll: true });
 }
 
-function renderCard(ch, providerChannels = [ch], groupKey = "") {
-  const usage = ch.usage || {};
-  const ringHtml = ch.rpm_limit ? renderRing(usage.calls_this_minute || 0, ch.rpm_limit) : renderRing(0, 0);
-  const resetTxt = fmtCountdown(usage.seconds_until_minute_reset);
+function selectCompanyAccount(companyKey, envVar) {
+  const group = groupChannelsByCompany(channels).find(g => g.key === companyKey);
+  if (!group) return;
+  const models = group.items.filter(c => c.env_var === envVar).sort(modelSort);
+  let pick = models[0];
+  if (activeTier !== "全部") {
+    pick = models.find(c => c.tier === activeTier) || pick;
+  }
+  if (pick) selectedCompanyChannel.set(companyKey, pick.channel_id);
+  render({ preserveScroll: true });
+}
 
-  let usageBlock;
-  if (!usage.available) {
-    usageBlock = `<div class="usage-unavailable">暂无实时用量数据（未连接 Redis 或尚无调用记录）</div>`;
-  } else {
-    usageBlock = `
-      <div class="usage-text">
-        这分钟 ${usage.calls_this_minute || 0} / ${ch.rpm_limit || "—"} 次
-        ${resetTxt ? `<span class="reset"> · ${resetTxt}</span>` : ""}<br>
-        今天累计 ${usage.calls_today || 0} 次 · 成功 ${usage.successful_calls_today || 0}
-        · 失败 ${usage.failed_calls_today || 0}
-        ${usage.average_latency_ms_today != null ? `<br>今日平均延迟 ${Math.round(usage.average_latency_ms_today)} ms` : ""}
-        ${usage.last_error_class ? ` · 最近错误 ${esc(usage.last_error_class)}` : ""}
-      </div>`;
+/**
+ * 模型选择：
+ * · 筛选某档时：下拉只列该档模型
+ * · 更高档只做一行短提示「已配置顶级」，不拆「顶级/强 / 中/弱」两大段
+ */
+function renderModelCatalog(companyItems, activeChannel, groupKey) {
+  const byAccount = companyItems.filter(c => c.env_var === activeChannel.env_var).sort(modelSort);
+  if (!byAccount.length) {
+    return `<span class="model-text">${esc(modelLabel(activeChannel))}</span>`;
   }
 
-  const costBlock = renderCostBlock(usage);
+  const focus = activeTier && activeTier !== "全部" ? activeTier : null;
+  let listed = byAccount;
+  if (focus) {
+    const inFocus = byAccount.filter(c => c.tier === focus);
+    listed = inFocus.length ? inFocus : byAccount;
+  }
 
-  const keyBlock = ch.is_configured
-    ? `<div class="key-row" data-channel="${ch.channel_id}">
-         <div class="key-display">${esc(ch.masked_key || "已配置")}</div>
-         <button class="btn btn-secondary" onclick="startEdit('${ch.channel_id}')">编辑</button>
-       </div>`
-    : `<div class="not-configured" data-channel="${ch.channel_id}">
-         <span>尚未配置 API Key</span>
-         ${ch.signup_url ? `<a class="signup-link" href="${ch.signup_url}" target="_blank" rel="noopener">去申请 →</a>` : ""}
-         <button class="btn btn-primary" onclick="startEdit('${ch.channel_id}')">填写</button>
-       </div>`;
+  // 下拉顺序：可重置免费 → 普通 → 一次性免费
+  listed = listed.slice().sort(modelSort);
+  const options = listed.map(c => {
+    const sm = c.smoothness || {};
+    const smTag = sm.available && sm.label_level === "smooth" ? " ·顺"
+      : (sm.available && sm.label_level === "busy" ? " ·堵" : "");
+    const fq = c.free_quota_label_zh ? ` ·${c.free_quota_label_zh}` : "";
+    const label = `${modelLabel(c)}${fq}${smTag}`;
+    return `<option value="${esc(c.channel_id)}" ${c.channel_id === activeChannel.channel_id ? "selected" : ""}>${esc(label)}</option>`;
+  }).join("");
 
-  const optimalTag = ch.is_optimal
-    ? `<span class="optimal-tag">⚡ 限时优先中 · ${fmtExpiry(ch.optimal_seconds_until_expiry)}</span>`
-    : "";
-
-  const optimalAction = ch.is_optimal
-    ? `<button class="btn btn-secondary" onclick="cancelOptimal('${ch.channel_id}')">取消优先</button>`
-    : `<button class="btn btn-amber" onclick="startOptimal('${ch.channel_id}')">⚡ 标记限时优先</button>`;
-
-  const modelControl = providerChannels.length > 1
-    ? `<select class="model-select" aria-label="选择 ${esc(ch.provider_name)} 模型"
-               onchange="selectProviderModel('${encodeURIComponent(groupKey)}', this.value)">
-         ${providerChannels.map((candidate, index) => {
-           const duplicateCount = providerChannels.filter(item => item.model === candidate.model).length;
-           const suffix = duplicateCount > 1 ? ` · 账号 ${index + 1}` : "";
-           return `<option value="${esc(candidate.channel_id)}" ${candidate.channel_id === ch.channel_id ? "selected" : ""}>${esc(candidate.model + suffix)}</option>`;
-         }).join("")}
-       </select>`
-    : `<span class="model-text" title="${esc(ch.model)}">${esc(ch.model)}</span>`;
+  const higher = focus ? higherTiersThan(byAccount, focus) : [];
+  const configured = companyIsConfigured(byAccount);
+  let otherHint = "";
+  if (higher.length) {
+    // 例：筛「强」且同账号有顶级 → 「已配置顶级 · 本档作备用」
+    if (higher.includes("顶级")) {
+      otherHint = configured
+        ? "已配置顶级 · 本档作备用（同账号）"
+        : "另有顶级（同账号，未填 Key）";
+    } else {
+      const top = higher[0];
+      otherHint = configured
+        ? `已配置${top} · 本档作备用（同账号）`
+        : `另有${higher.join("、")}（同账号，未填 Key）`;
+    }
+  } else if (!focus && companyTiers(byAccount).length > 1) {
+    const top = companyTiers(byAccount)[0];
+    otherHint = configured && top === "顶级"
+      ? `共 ${byAccount.length} 个模型 · 已配置顶级`
+      : `共 ${byAccount.length} 个模型 · 最高${top}`;
+  } else if (listed.length > 1) {
+    otherHint = `本档 ${listed.length} 个模型`;
+  }
 
   return `
-    <div class="card ${ch.is_optimal ? "is-optimal" : ""}" id="card-${cssId(ch.channel_id)}">
+    <div class="model-catalog" id="modelblock-${cssId(activeChannel.channel_id)}">
+      <div class="model-view" style="flex-wrap:wrap;gap:6px;align-items:center">
+        <select class="model-select compact" aria-label="选择模型"
+                onchange="selectCompanyChannel('${esc(groupKey)}', this.value)">
+          ${options}
+        </select>
+        <button class="model-edit-btn" type="button"
+                onclick="startModelEdit('${activeChannel.channel_id}')" title="修改当前模型名">改名</button>
+      </div>
+      ${otherHint ? `<div class="model-shared-key-hint">${esc(otherHint)}</div>` : ""}
+    </div>`;
+}
+
+async function addCompanyAccount(companyId) {
+  if (!confirm("为该公司再添加一个账号？将复制当前模型列表，你只需填写新 Key。\n（多账号叠加额度可能违反厂商 ToS，请自行判断。）")) {
+    return;
+  }
+  try {
+    const res = await apiFetch(`/api/companies/${encodeURIComponent(companyId)}/accounts`, {
+      method: "POST",
+    });
+    const data = await res.json().catch(() => ({}));
+    const msg = typeof data.detail === "string" ? data.detail : (data.message || (res.ok ? "已添加账号" : "添加失败"));
+    showToast(msg);
+    if (res.ok) await fetchChannels({ force: true });
+  } catch (e) {
+    showToast("网络错误，添加账号失败");
+  }
+}
+
+function renderCard(ch, companyItems = [ch], groupKey = "") {
+  const usage = ch.usage || {};
+  const companySm = companySmoothness(companyItems) || ch.smoothness;
+  const smoothBadgeHtml = smoothnessBadge(companySm);
+  const keyBlock = buildKeyBlockHtml(ch);
+  // 额度放最前：数字 0/200 为主；不再显示「本分钟/今日」圆环行
+
+  const companyName = ch.company_name || ch.provider_name || "";
+  const accounts = uniqueAccounts(companyItems);
+  // 角标：当前筛选档 或 该公司最高档；更高档用「已配置顶级」单独标
+  const focusTier = (activeTier && activeTier !== "全部") ? activeTier : null;
+  const displayTier = focusTier || companyTiers(companyItems)[0] || ch.tier || "";
+  const tierPills = displayTier
+    ? `<span class="badge" style="background:${TIER_COLOR[displayTier] || "var(--fill)"};color:#fff">${esc(displayTier)}</span>`
+    : "";
+  const higherBadge = higherTierBadge(companyItems, focusTier || "全部");
+  // 当前选中模型 / 公司级免费性质角标
+  const fqBadge = ch.free_quota_label_zh
+    ? `<span class="badge ${ch.free_quota_kind === "once" ? "badge-free-once" : "badge-free-reset"}" title="${esc(ch.how_free_zh || ch.free_quota_label_zh)}">${esc(ch.free_quota_label_zh)}</span>`
+    : "";
+
+  const companyId = ch.company_id || groupKey;
+
+  const accountControl = accounts.length > 1
+    ? `<select class="model-select compact" aria-label="选择账号"
+               onchange="selectCompanyAccount('${esc(groupKey)}', this.value)">
+         ${accounts.map(a => {
+           const cfg = a.is_configured ? "已配" : "未填";
+           return `<option value="${esc(a.env_var)}" ${a.env_var === ch.env_var ? "selected" : ""}>${esc(a.account_label || ("账号 " + (a.account_index || 1)))} · ${cfg}</option>`;
+         }).join("")}
+       </select>`
+    : "";
+
+  const modelCatalog = renderModelCatalog(companyItems, ch, groupKey);
+
+  // 无展开/收起：常显 = 名称·模型 · 额度 · Key · 一行操作
+  // 「去申请」只在未配置 Key 区域显示一次，避免与操作栏重复
+  const actions = `
+    <div class="card-actions" id="optimalblock-${cssId(ch.channel_id)}" style="margin-top:6px">
+      ${ch.is_optimal
+        ? `<button class="btn btn-secondary" onclick="cancelOptimal('${ch.channel_id}')">取消限时优先</button>`
+        : `<button class="btn btn-amber" onclick="startOptimal('${ch.channel_id}')">⚡ 限时优先</button>`}
+      <button class="btn btn-secondary" type="button" onclick="addCompanyAccount('${esc(companyId)}')">+ 账号</button>
+      <span id="priority-display-${cssId(ch.channel_id)}" class="compact-meta" style="margin-left:auto">
+        优先级 <span class="priority-value" onclick="startPriorityEdit('${ch.channel_id}')" title="点击修改">${ch.priority ?? "—"} ✎</span>
+      </span>
+    </div>`;
+
+  return `
+    <div class="card is-compact ${ch.is_optimal ? "is-optimal" : ""}" id="card-${cssId(ch.channel_id)}">
       <div class="card-top">
         <div class="card-title">
-          <div class="name">${esc(ch.provider_name)}</div>
-          <div class="model" id="modelblock-${cssId(ch.channel_id)}">
-            <div class="model-view">
-              ${modelControl}
-              <button class="model-edit-btn" type="button"
-                      onclick="startModelEdit('${ch.channel_id}')" title="填写模型名称">修改</button>
-            </div>
+          <div class="name">${esc(companyName)}</div>
+          <div class="model" style="display:flex;flex-direction:column;gap:4px;margin-top:4px;width:100%">
+            ${accountControl ? `<div class="model-view" style="gap:6px">${accountControl}</div>` : ""}
+            ${modelCatalog}
           </div>
         </div>
         <span class="badge-stack">
-          ${ch.billing === "paid" ? `<span class="badge badge-paid">按量付费</span>` : ""}
+          ${tierPills}
+          ${fqBadge}
+          ${higherBadge}
+          ${smoothBadgeHtml}
+          ${billingBadge(ch)}
           <span class="badge badge-${ch.trust}">${TRUST_LABEL[ch.trust] || ch.trust}</span>
         </span>
       </div>
-      ${optimalTag ? `<div>${optimalTag}${ch.optimal_reason ? ` <span class="usage-unavailable">${esc(ch.optimal_reason)}</span>` : ""}</div>` : ""}
-      <div class="ring-row">
-        ${ringHtml}
-        ${usageBlock}
-      </div>
-      ${costBlock}
-      <div class="divider"></div>
-      <div class="meta-row">
-        <span id="priority-display-${cssId(ch.channel_id)}">
-          优先级 <span class="priority-value" onclick="startPriorityEdit('${ch.channel_id}')" title="点击修改">${ch.priority ?? "—"} ✎</span>
-        </span>
-        <span>${ch.is_trusted_pool_member ? "✓ 可用于敏感内容兜底" : "不用于敏感内容兜底"}</span>
-      </div>
-      <div class="meta-row">
-        <span>${discoveryLabel(ch.discovery)}</span>
-        <span>数据政策: ${esc(ch.data_policy || "unverified")}</span>
-      </div>
+      ${ch.is_optimal ? `<div class="optimal-tag">⚡ 限时优先 · ${fmtExpiry(ch.optimal_seconds_until_expiry)}</div>` : ""}
+      ${renderQuotaPanel(ch)}
       <div id="keyblock-${cssId(ch.channel_id)}">${keyBlock}</div>
-      <div class="card-actions" id="optimalblock-${cssId(ch.channel_id)}">${optimalAction}</div>
+      ${actions}
     </div>`;
 }
 
@@ -1012,6 +2340,15 @@ function fmtMoney(v) {
   if (v === 0) return "$0";
   if (v < 0.01) return "$" + v.toFixed(6);
   return "$" + v.toFixed(4);
+}
+
+/** Token 用量统一按百万（M）展示；小值保留精度，避免显示成 0M。 */
+function fmtTokensM(value) {
+  const tokens = Number(value || 0);
+  if (!Number.isFinite(tokens)) return "—";
+  const millions = tokens / 1_000_000;
+  const digits = millions === 0 ? 0 : millions < 0.01 ? 4 : millions < 1 ? 3 : millions < 100 ? 2 : 1;
+  return `${millions.toFixed(digits)}M`;
 }
 
 function renderCostBlock(usage) {
@@ -1031,7 +2368,7 @@ function renderCostBlock(usage) {
 
   return `
     <div class="cost-block">
-      <span>今日 ${(usage.day_tokens || 0).toLocaleString()} tokens · 累计 ${(usage.total_tokens || 0).toLocaleString()} tokens</span>
+      <span>今日 ${fmtTokensM(usage.day_tokens)} tokens · 累计 ${fmtTokensM(usage.total_tokens)} tokens</span>
       <span>${costLine}</span>
     </div>`;
 }
@@ -1040,26 +2377,64 @@ function cssId(id) {
   return id.replace(/[^a-zA-Z0-9]/g, "_");
 }
 
+function billingBadge(ch) {
+  const billing = ch.billing || "free_or_trial";
+  const label = ch.pricing_label_zh
+    || ({
+      free: "免费层",
+      trial: "试用额度",
+      free_plus_paid: "免费+付费",
+      paid: "按量付费",
+      free_or_trial: "免费/试用",
+    })[billing]
+    || billing;
+  const cls = billing === "paid" ? "badge-paid" : `badge-billing-${billing}`;
+  return `<span class="badge ${cls}" title="${esc(ch.how_free_zh || ch.pricing_detail_zh || label)}">${esc(label)}</span>`;
+}
+
+/** 收费/免费说明（精简：一行摘要 + 链，全文放 title） */
+function renderPricingPanel(ch) {
+  const billing = ch.billing || "free_or_trial";
+  const isPaid = billing === "paid";
+  const head = isPaid ? "收费" : "免费/试用";
+  const full = isPaid
+    ? (ch.pricing_detail_zh || ch.note || "按量付费")
+    : (ch.how_free_zh || ch.note || "到官网领 Key");
+  const short = full.length > 72 ? full.slice(0, 70) + "…" : full;
+  const link = ch.signup_url
+    ? `<a href="${esc(ch.signup_url)}" target="_blank" rel="noopener">申请 →</a>`
+    : "";
+  return `
+    <div class="pricing-panel" title="${esc(full)}">
+      <div class="pricing-panel-head">
+        <span>${esc(head)} · ${esc(ch.pricing_label_zh || "")}</span>
+        ${link}
+      </div>
+      <div class="how-free model-shared-key-hint">${esc(short)}</div>
+    </div>`;
+}
+
 function matchesSearch(ch) {
   if (!searchQuery) return true;
   const haystack = [
-    ch.provider_name, ch.model, ch.env_var, ch.tier, ch.tier_pool,
+    ch.provider_name, ch.model, ch.model_display, ch.env_var, ch.tier, ch.tier_pool,
     ch.trust, TRUST_LABEL[ch.trust], ch.note, ch.billing,
+    ch.pricing_label_zh, ch.how_free_zh, ch.pricing_detail_zh,
   ].filter(Boolean).join(" ").toLowerCase();
   return haystack.includes(searchQuery);
 }
 
 function channelOrder(a, b) {
-  return Number(b.is_configured) - Number(a.is_configured)
+  return Number(b.priority ?? 0) - Number(a.priority ?? 0)
+    || Number(b.is_configured) - Number(a.is_configured)
     || Number(b.is_optimal) - Number(a.is_optimal)
-    || ((b.priority || 0) - (a.priority || 0))
     || String(a.provider_name || "").localeCompare(String(b.provider_name || ""), "zh-CN");
 }
 
 function toggleTier(tier) {
   if (collapsedTiers.has(tier)) collapsedTiers.delete(tier);
   else collapsedTiers.add(tier);
-  render();
+  render({ preserveScroll: true });
 }
 
 function toggleAllTiers() {
@@ -1069,107 +2444,314 @@ function toggleAllTiers() {
     if (shouldExpand) collapsedTiers.delete(tier);
     else collapsedTiers.add(tier);
   }
-  render();
+  render({ preserveScroll: true });
+}
+
+function paintPriorityDisplay(channelId, priority) {
+  const el = document.getElementById(`priority-display-${cssId(channelId)}`);
+  if (!el) return;
+  const val = (priority === 0 || priority) ? priority : "—";
+  el.innerHTML =
+    `优先级 <span class="priority-value" onclick="startPriorityEdit('${channelId}')" title="点击修改">${val} ✎</span>`;
 }
 
 function startPriorityEdit(channelId) {
   const el = document.getElementById(`priority-display-${cssId(channelId)}`);
+  if (!el) {
+    showToast("找不到优先级控件，请刷新页面");
+    return;
+  }
   const ch = channels.find(c => c.channel_id === channelId);
+  const cur = ch && (ch.priority === 0 || ch.priority) ? ch.priority : "";
   el.innerHTML = `
     <span class="priority-edit-row">
       优先级
-      <input type="number" class="priority-input" id="priority-input-${cssId(channelId)}" value="${ch ? ch.priority : ''}" />
-      <button class="btn btn-primary" onclick="savePriority('${channelId}')">保存</button>
+      <input type="number" class="priority-input" id="priority-input-${cssId(channelId)}"
+             min="0" max="1000" step="1" value="${cur}"
+             onkeydown="if(event.key==='Enter'){event.preventDefault();savePriority('${channelId}');}" />
+      <button type="button" class="btn btn-primary" onclick="event.stopPropagation();savePriority('${channelId}')">保存</button>
+      <button type="button" class="btn btn-secondary" onclick="event.stopPropagation();paintPriorityDisplay('${channelId}', ${cur === "" ? "null" : Number(cur)})">取消</button>
     </span>`;
-  document.getElementById(`priority-input-${cssId(channelId)}`).focus();
+  const input = document.getElementById(`priority-input-${cssId(channelId)}`);
+  if (input) { input.focus(); input.select(); }
+}
+
+function paintModelBlock(channelId) {
+  const ch = channels.find(c => c.channel_id === channelId);
+  const el = document.getElementById(`modelblock-${cssId(channelId)}`);
+  if (!el || !ch) return;
+  // 用同公司全量 items 重画下拉（关掉编辑框）
+  const companyId = ch.company_id || ch.env_var || "";
+  const companyItems = channels.filter(c => (c.company_id || c.env_var) === companyId);
+  const groupKey = companyId;
+  el.outerHTML = renderModelCatalog(companyItems.length ? companyItems : [ch], ch, groupKey);
 }
 
 function startModelEdit(channelId) {
   const ch = channels.find(c => c.channel_id === channelId);
   if (!ch) return;
   const el = document.getElementById(`modelblock-${cssId(channelId)}`);
+  if (!el) {
+    showToast("找不到模型编辑区，请刷新页面");
+    return;
+  }
+  // 展示/编辑用厂商模型 id（无 gemini/ openai/）；保存时后端自动补 LiteLLM 前缀
+  const display = ch.model_display || ch.model || "";
   el.innerHTML = `
     <div class="model-edit-row">
       <input class="model-input" id="model-input-${cssId(channelId)}"
-             value="${esc(ch.model)}" placeholder="例如 openai/gpt-4o-mini" />
-      <button class="model-save-btn" type="button" onclick="saveModel('${channelId}')">保存</button>
-    </div>`;
+             value="${esc(display)}" placeholder="例如 gemini-2.5-pro、minimax-m2.7、Meta-Llama-3.1-70B-Instruct"
+             onkeydown="if(event.key==='Enter'){event.preventDefault();saveModel('${channelId}');}" />
+      <button class="model-save-btn" type="button" onclick="event.stopPropagation();saveModel('${channelId}')">保存</button>
+      <button type="button" class="btn btn-secondary" onclick="event.stopPropagation();paintModelBlock('${channelId}')">取消</button>
+    </div>
+    <div class="usage-unavailable" style="margin-top:6px">填厂商文档里的模型名即可，不必加 gemini/ openai/ 前缀</div>`;
   const input = document.getElementById(`model-input-${cssId(channelId)}`);
-  input.focus();
-  input.select();
+  if (input) { input.focus(); input.select(); }
 }
 
 async function saveModel(channelId) {
   const input = document.getElementById(`model-input-${cssId(channelId)}`);
+  if (!input) {
+    showToast("模型输入框已关闭，请重新点「改名」");
+    return;
+  }
   const model = input.value.trim();
   if (!model) {
     showToast("请填写上游实际提供的模型名称");
     return;
   }
+  input.disabled = true;
+  showToast("正在保存模型名…");
   try {
     const res = await apiFetch(`/api/channels/${encodeURIComponent(channelId)}/model`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model }),
     });
-    const data = await res.json();
-    showToast(data.message || data.detail || (res.ok ? "模型名称已保存" : "保存失败"));
-    if (res.ok) await fetchChannels();
+    const data = await res.json().catch(() => ({}));
+    const detail = data.detail;
+    const errText = typeof detail === "string" ? detail
+      : Array.isArray(detail) ? detail.map(x => x.msg || x).join("; ")
+      : (data.message || (res.ok ? "模型名称已保存" : "保存失败"));
+    showToast(errText);
+    if (res.ok) {
+      // 先更新本地并关掉编辑框，再 force 刷新
+      const ch = channels.find(c => c.channel_id === channelId);
+      if (ch) {
+        if (data.model) ch.model = data.model;
+        if (data.model_display) ch.model_display = data.model_display;
+        else ch.model_display = model;
+      }
+      paintModelBlock(channelId);
+      fetchChannels({ force: true }).catch(() => {});
+    } else {
+      input.disabled = false;
+    }
   } catch (e) {
     showToast("网络错误，模型名称保存失败");
+    if (input) input.disabled = false;
   }
 }
 
 async function savePriority(channelId) {
   const input = document.getElementById(`priority-input-${cssId(channelId)}`);
-  const value = parseInt(input.value, 10);
-  if (Number.isNaN(value)) {
-    showToast("请输入一个整数");
+  if (!input) {
+    showToast("优先级输入框已关闭，请重新点击修改");
     return;
   }
+  const value = parseInt(String(input.value).trim(), 10);
+  if (Number.isNaN(value) || value < 0 || value > 1000) {
+    showToast("请输入 0–1000 的整数（越大越优先）");
+    return;
+  }
+  input.disabled = true;
+  showToast("正在保存优先级…");
   try {
     const res = await apiFetch(`/api/channels/${encodeURIComponent(channelId)}/priority`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ priority: value }),
     });
-    const data = await res.json();
-    showToast(data.message || data.detail || (res.ok ? "已保存" : "保存失败"));
-    if (res.ok) await fetchChannels();
+    let data = {};
+    try { data = await res.json(); } catch (_) { data = {}; }
+    const detail = data.detail;
+    const msg = typeof detail === "string" ? detail
+      : Array.isArray(detail) ? detail.map(x => x.msg || x).join("; ")
+      : (data.message || (res.ok ? "优先级已保存" : `保存失败 HTTP ${res.status}`));
+    showToast(msg);
+    if (res.ok) {
+      // 先关掉编辑态，否则 morph 因 priority-input 存在会跳过整卡更新（看起来像没反应）
+      const ch = channels.find(c => c.channel_id === channelId);
+      if (ch) ch.priority = value;
+      paintPriorityDisplay(channelId, value);
+      // 后台静默同步，不挡 UI
+      fetchChannels({ force: true }).catch(() => {});
+    } else {
+      input.disabled = false;
+    }
   } catch (e) {
-    showToast("网络错误，保存失败");
+    showToast("网络错误，优先级保存失败");
+    if (input) input.disabled = false;
   }
 }
 
 function startEdit(channelId) {
   const el = document.getElementById(`keyblock-${cssId(channelId)}`);
+  if (!el) return;
+  // 记录滚动位置，避免保存后“跳出去”
+  const y = (document.scrollingElement || document.documentElement).scrollTop;
+  el.dataset.editScrollY = String(y);
   el.innerHTML = `
     <div class="key-row">
-      <input class="key-input" type="password" autocomplete="off" placeholder="粘贴 API Key" id="input-${cssId(channelId)}" />
-      <button class="btn btn-primary" onclick="saveKey('${channelId}')">保存</button>
+      <input class="key-input" type="password" autocomplete="off" placeholder="粘贴该厂商的 API Key" id="input-${cssId(channelId)}" />
+      <button class="btn btn-primary" type="button" onclick="saveKey('${channelId}')">保存并检查连接</button>
+      <button class="btn btn-secondary" type="button" onclick="cancelEditKey('${channelId}')">取消</button>
+    </div>
+    <div class="usage-unavailable" id="probe-channel-${cssId(channelId)}" style="display:block;margin-top:6px;color:var(--text-tertiary)">
+      保存后会自动向该厂商发起一次真实请求以验证 Key（不会整页跳转）
     </div>`;
-  document.getElementById(`input-${cssId(channelId)}`).focus();
+  const input = document.getElementById(`input-${cssId(channelId)}`);
+  if (input) input.focus();
+}
+
+function cancelEditKey(channelId) {
+  const ch = channels.find(c => c.channel_id === channelId);
+  const el = document.getElementById(`keyblock-${cssId(channelId)}`);
+  if (el && ch) {
+    el.innerHTML = buildKeyBlockHtml(ch);
+    restoreProbeSlots();
+  } else {
+    render({ preserveScroll: true });
+  }
+}
+
+/** 仅刷新某一渠道的 key 区域，避免整页 morph 导致跳动/失焦 */
+function paintKeyBlock(channelId, ch, probe) {
+  const el = document.getElementById(`keyblock-${cssId(channelId)}`);
+  if (!el) return;
+  if (probe) lastProbeByChannel.set(channelId, probe);
+  el.innerHTML = buildKeyBlockHtml(ch || channels.find(c => c.channel_id === channelId) || {
+    channel_id: channelId,
+    is_configured: true,
+    masked_key: "****",
+  });
+  if (probe) showProbeOnCard(channelId, probe);
+}
+
+function buildKeyBlockHtml(ch) {
+  if (!ch) return "";
+  const cachedProbe = lastProbeByChannel.get(ch.channel_id);
+  const probeHtml = cachedProbe
+    ? `<div class="usage-unavailable" id="probe-channel-${cssId(ch.channel_id)}" style="display:block;margin-top:6px;color:${cachedProbe.ok ? "#1c7f3b" : "#c42b23"}">${esc(formatProbeMessage(cachedProbe))}</div>`
+    : `<div class="usage-unavailable" id="probe-channel-${cssId(ch.channel_id)}" style="display:none;margin-top:6px"></div>`;
+  if (ch.is_configured) {
+    return `<div class="key-row" data-channel="${ch.channel_id}">
+         <div class="key-display">${esc(ch.masked_key || "已配置")}</div>
+         <button class="btn btn-secondary" type="button" onclick="probeChannel('${ch.channel_id}')">检查连接</button>
+         <button class="btn btn-secondary" type="button" onclick="startEdit('${ch.channel_id}')">编辑</button>
+       </div>
+       ${probeHtml}`;
+  }
+  return `<div class="not-configured" data-channel="${ch.channel_id}">
+         <span>尚未配置 API Key</span>
+         ${ch.signup_url ? `<a class="signup-link" href="${esc(ch.signup_url)}" target="_blank" rel="noopener">去申请 →</a>` : ""}
+         <button class="btn btn-primary" type="button" onclick="startEdit('${ch.channel_id}')">填写并检查</button>
+       </div>
+       ${probeHtml}`;
 }
 
 async function saveKey(channelId) {
   const input = document.getElementById(`input-${cssId(channelId)}`);
-  const value = input.value.trim();
-  if (!value) return;
+  const value = input ? input.value.trim() : "";
+  if (!value) {
+    showToast("请先粘贴 API Key");
+    return;
+  }
+  const keyblock = document.getElementById(`keyblock-${cssId(channelId)}`);
+  const scrollY = keyblock && keyblock.dataset.editScrollY
+    ? Number(keyblock.dataset.editScrollY)
+    : (document.scrollingElement || document.documentElement).scrollTop;
+
+  const slot = document.getElementById(`probe-channel-${cssId(channelId)}`);
+  if (slot) {
+    slot.style.display = "block";
+    slot.style.color = "var(--text-tertiary)";
+    slot.textContent = "正在保存并检查连接…";
+  }
+  // 禁用按钮防连点
+  const btns = keyblock ? keyblock.querySelectorAll("button") : [];
+  btns.forEach(b => { b.disabled = true; });
+  showToast("正在保存并检查该厂商连接…");
   try {
     const res = await apiFetch(`/api/channels/${encodeURIComponent(channelId)}/key`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ value }),
     });
-    const data = await res.json();
+    let data = {};
+    try {
+      data = await res.json();
+    } catch (_) {
+      data = { detail: `HTTP ${res.status}` };
+    }
     if (res.ok) {
-      showToast(data.message || "已保存");
-      await fetchChannels();
+      const probe = data.probe || {
+        ok: !!data.connection_ok,
+        message: data.message || "",
+        latency_ms: data.probe && data.probe.latency_ms,
+      };
+      // 本地更新渠道状态，就地画回卡片，禁止整页刷新导致“跳出去”
+      const ch = channels.find(c => c.channel_id === channelId);
+      if (ch) {
+        ch.is_configured = true;
+        ch.masked_key = data.masked_key || (`****${value.slice(-4)}`);
+        ch.connection_ok = !!probe.ok;
+        ch.connection_message = probe.message || "";
+        const cid = ch.company_id || ch.env_var;
+        channels.forEach(c => {
+          if ((c.company_id || c.env_var) === cid) {
+            c.is_configured = c.is_configured || true;
+            c.connection_ok = probe.ok;
+          }
+        });
+      }
+      lastProbeByChannel.set(channelId, probe);
+      paintKeyBlock(channelId, ch, probe); // 立刻关掉 key-input，避免框停在那里
+      renderHeroStats();
+      showToast(data.message || formatProbeMessage(probe));
+      // 强制刷新列表（force 才能替换曾处于编辑态的卡片）
+      setTimeout(() => {
+        fetchChannels({ force: true }).then(() => {
+          restoreProbeSlots();
+          const scroller = document.scrollingElement || document.documentElement;
+          if (scroller && Number.isFinite(scrollY)) scroller.scrollTop = scrollY;
+        }).catch(() => {});
+      }, 300);
+      // 立刻恢复滚动位置
+      requestAnimationFrame(() => {
+        const scroller = document.scrollingElement || document.documentElement;
+        if (scroller && Number.isFinite(scrollY)) scroller.scrollTop = scrollY;
+      });
     } else {
-      showToast(data.detail || "保存失败");
+      const detail = data.detail;
+      const msg = typeof detail === "string"
+        ? detail
+        : (detail && detail.message) || data.message || `保存失败（HTTP ${res.status}）`;
+      showToast(msg);
+      if (slot) {
+        slot.style.color = "#c42b23";
+        slot.textContent = `✗ ${msg}`;
+      }
+      btns.forEach(b => { b.disabled = false; });
     }
   } catch (e) {
-    showToast("网络错误，保存失败");
+    showToast(`保存失败：${e.message || e}`);
+    if (slot) {
+      slot.style.color = "#c42b23";
+      slot.textContent = `✗ ${e.message || e}`;
+    }
+    btns.forEach(b => { b.disabled = false; });
   }
 }
 
@@ -1189,7 +2771,7 @@ function startOptimal(channelId) {
       <input type="number" min="0" step="0.5" placeholder="多少小时后过期？留空=没有过期时间，手动取消" id="hours-${cssId(channelId)}" />
       <div class="card-actions">
         <button class="btn btn-amber" onclick="saveOptimal('${channelId}')">确认标记</button>
-        <button class="btn btn-secondary" onclick="render()">取消</button>
+        <button class="btn btn-secondary" onclick="render({ force: true })">取消</button>
       </div>
     </div>`;
 }
@@ -1207,7 +2789,7 @@ async function saveOptimal(channelId) {
     });
     const data = await res.json();
     showToast(data.message || (res.ok ? "已标记" : "标记失败"));
-    if (res.ok) await fetchChannels();
+    if (res.ok) await fetchChannels({ force: true });
   } catch (e) {
     showToast("网络错误，标记失败");
   }
@@ -1218,7 +2800,7 @@ async function cancelOptimal(channelId) {
     const res = await apiFetch(`/api/channels/${encodeURIComponent(channelId)}/optimal`, { method: "DELETE" });
     const data = await res.json();
     showToast(data.message || "已取消");
-    if (res.ok) await fetchChannels();
+    if (res.ok) await fetchChannels({ force: true });
   } catch (e) {
     showToast("网络错误，取消失败");
   }
@@ -1232,78 +2814,216 @@ function renderOptimalBanner() {
     return;
   }
   const names = optimalOnes.map(c => `${esc(c.provider_name)}（${fmtExpiry(c.optimal_seconds_until_expiry)}）`).join("、");
-  el.innerHTML = `<div class="optimal-banner">⚡ 正在优先烧额度：${names} — 除敏感内容外，所有请求都会先分给这些渠道</div>`;
+  el.innerHTML = `<div class="optimal-banner">⚡ 正在优先烧额度：${names} — 仅优先承接不高于渠道自身档位的非敏感任务；不可用时自动回退</div>`;
 }
 
-function render() {
-  renderOptimalBanner();
-
-  const total = channels.length;
-  const configured = channels.filter(c => c.is_configured).length;
-
-  let totalTokensAlltime = 0;
-  let totalCostAlltime = 0;
-  let anyCostData = false;
-  let anyEstimated = false;
-  for (const c of channels) {
-    const u = c.usage || {};
-    totalTokensAlltime += u.total_tokens || 0;
-    if (u.total_cost !== null && u.total_cost !== undefined) {
-      totalCostAlltime += u.total_cost;
-      anyCostData = true;
-      if (u.cost_source === "estimated") anyEstimated = true;
+function patchLiveCountdowns() {
+  // 只刷新额度面板数字（本分钟 used），不再维护圆环 / 「本分钟·今日」文案
+  for (const ch of channels) {
+    const id = cssId(ch.channel_id);
+    const usage = ch.usage || {};
+    const usedMin = usage.calls_this_minute || 0;
+    const windows = ((ch.rate_limits || {}).windows) || [];
+    for (const w of windows) {
+      if (w.id !== "rpm" && w.window_sec !== 60) continue;
+      const winId = String(w.id || "rpm").replace(/[^a-zA-Z0-9_-]/g, "_");
+      const row = document.querySelector(`[data-quota-row="${id}"][data-quota-win="${winId}"]`);
+      if (!row) continue;
+      const limit = w.limit != null ? w.limit : ch.rpm_limit;
+      const valEl = row.querySelector("[data-quota-val]");
+      if (valEl && limit != null) {
+        valEl.textContent = `${fmtQuotaNum(usedMin)}/${fmtQuotaNum(limit)}`;
+      }
+      const bar = row.querySelector(".quota-bar i");
+      if (bar && limit) {
+        const pct = Math.min(100, Math.round((usedMin / Number(limit)) * 100));
+        bar.style.width = `${pct}%`;
+        bar.style.background = ringColor(pct);
+      }
     }
   }
-  const costDisplay = anyCostData
-    ? `${anyEstimated ? "~" : ""}${fmtMoney(totalCostAlltime)}`
-    : "—";
+}
 
-  document.getElementById("heroStats").innerHTML = `
-    <div class="hero-stat"><div class="num">${configured}/${total}</div><div class="label">已配置渠道</div></div>
-    <div class="hero-stat"><div class="num">${totalTokensAlltime.toLocaleString()}</div><div class="label">累计消耗 tokens</div></div>
-    <div class="hero-stat"><div class="num">${costDisplay}</div><div class="label">预计累计花费</div></div>
+/** 公司是否算「正常连接」：探测成功 / 今日成功调用 / 内存最近探测 ok */
+function companyIsConnected(items) {
+  if (!items || !items.length) return false;
+  // 任一模型 connection_ok === true
+  if (items.some(c => c.connection_ok === true)) return true;
+  // 前端刚检查过
+  for (const c of items) {
+    const p = lastProbeByChannel.get(c.channel_id);
+    if (p && p.ok) return true;
+  }
+  // 今日有成功调用
+  if (items.some(c => c.usage && c.usage.available && Number(c.usage.successful_calls_today || 0) > 0)) {
+    return true;
+  }
+  return false;
+}
+
+function renderHeroStats() {
+  const companies = groupChannelsByCompany(channels);
+  const configuredGroups = companies.filter(g => g.items.some(c => c.is_configured));
+  const companyConfigured = configuredGroups.length;
+  // 正常连接：分母=已配置公司，分子=其中探测/调用正常的公司
+  const companyConnected = configuredGroups.filter(g => companyIsConnected(g.items)).length;
+  let totalTokensAlltime = 0;
+  let totalTokensToday = 0;
+  let savedCostAlltime = 0;
+  let savedCostToday = 0;
+  let anyAlltimeSavingsData = false;
+  let anySavingsData = false;
+  let anyUsageAvailable = false;
+  // 同公司多模型共用 usage_key 时只计一次，避免顶栏翻倍
+  const seenUsageKeys = new Set();
+  for (const c of channels) {
+    const uk = c.usage_key || c.channel_id;
+    if (seenUsageKeys.has(uk)) continue;
+    seenUsageKeys.add(uk);
+    const u = c.usage || {};
+    if (u.available) anyUsageAvailable = true;
+    totalTokensToday += Number(u.day_tokens || 0);
+    totalTokensAlltime += Number(u.total_tokens || 0);
+    // “节省”只统计明确仍有可重置免费层的渠道。day_cost 是同模型按
+    // 公示单价折算出的市场等值，不把一次性试用、混合付费或未知渠道算入。
+    const renewableFree = c.free_quota_kind === "resettable" || c.billing === "free";
+    if (renewableFree && u.total_cost !== null && u.total_cost !== undefined
+        && !Number.isNaN(Number(u.total_cost))) {
+      savedCostAlltime += Number(u.total_cost);
+      anyAlltimeSavingsData = true;
+    }
+    if (renewableFree && u.day_cost !== null && u.day_cost !== undefined
+        && !Number.isNaN(Number(u.day_cost))) {
+      savedCostToday += Number(u.day_cost);
+      anySavingsData = true;
+    }
+  }
+  // 累计节省与今日节省使用相同口径：可重置免费渠道的市场等值。
+  const alltimeSavingsDisplay = anyAlltimeSavingsData
+    ? `~${fmtMoney(savedCostAlltime)}`
+    : (anyUsageAvailable ? "$0" : "—");
+  const tokensDisplay = anyUsageAvailable || totalTokensAlltime > 0
+    ? fmtTokensM(totalTokensAlltime)
+    : "—";
+  const todayTokensDisplay = anyUsageAvailable || totalTokensToday > 0
+    ? fmtTokensM(totalTokensToday)
+    : "—";
+  const savingsDisplay = anySavingsData
+    ? `~${fmtMoney(savedCostToday)}`
+    : (anyUsageAvailable ? "$0" : "—");
+
+  const el = document.getElementById("heroStats");
+  if (!el) return;
+  const connTitle = companyConfigured
+    ? `已检查/调用正常的公司 ÷ 已填写 Key 的公司`
+    : "先填写上游 Key";
+  // 仅更新数字文本节点：避免整块 hero 抖动
+  const next = `
+    <div class="hero-stat" title="已填写 Key 的公司数">
+      <div class="num">${companyConfigured}</div>
+      <div class="label">已配置公司</div>
+    </div>
+    <div class="hero-stat" title="${esc(connTitle)}">
+      <div class="num">${companyConnected}/${companyConfigured || 0}</div>
+      <div class="label">正常连接公司</div>
+    </div>
+    <div class="hero-stat"><div class="num">${tokensDisplay}</div><div class="label">累计消耗 tokens</div></div>
+    <div class="hero-stat" title="可重置免费渠道累计用量按模型公示单价折算的市场等值"><div class="num">${alltimeSavingsDisplay}</div><div class="label">累计节省</div></div>
+    <div class="hero-stat"><div class="num">${channels.filter(c=>c.tier==="顶级").length}</div><div class="label">顶级</div></div>
     <div class="hero-stat"><div class="num">${channels.filter(c=>c.tier==="强").length}</div><div class="label">强档</div></div>
     <div class="hero-stat"><div class="num">${channels.filter(c=>c.tier==="中").length}</div><div class="label">中档</div></div>
     <div class="hero-stat"><div class="num">${channels.filter(c=>c.tier==="弱").length}</div><div class="label">弱档</div></div>
   `;
-
-  const tiers = activeTier === "全部" ? TIER_ORDER : [activeTier];
-  const matchingChannels = channels.filter(matchesSearch);
-  let html = "";
-  for (const tier of tiers) {
-    const list = matchingChannels.filter(c => c.tier === tier).sort(channelOrder);
-    if (list.length === 0) continue;
-    const providerGroups = groupChannelsByProvider(list, tier);
-    const collapsed = collapsedTiers.has(tier);
-    const configuredCount = list.filter(c => c.is_configured).length;
-    const showAllCompanies = Boolean(searchQuery) || expandedCompanyTiers.has(tier);
-    const visibleGroups = showAllCompanies ? providerGroups : providerGroups.slice(0, 1);
-    const cards = visibleGroups.map(group => renderCard(
-      selectedChannelForProvider(group), group.items, group.key
-    )).join("");
-    const revealControl = !searchQuery && providerGroups.length > 1
-      ? `<div class="provider-reveal"><button type="button" onclick="toggleTierCompanies('${tier}')">
-           ${showAllCompanies ? "收起至一家" : `查看其余 ${providerGroups.length - 1} 家服务商`}
-         </button></div>`
-      : "";
-    html += `
-      <div class="tier-section">
-        <div class="tier-heading">
-          <button class="tier-toggle" type="button" aria-expanded="${!collapsed}"
-                  onclick="toggleTier('${tier}')">
-            <span class="tier-dot" style="background:${TIER_COLOR[tier]}"></span>
-            <h2>${tier}档</h2>
-            <span class="count">${TIER_DESC[tier]} · ${providerGroups.length} 家服务商 · ${list.length} 个模型配置 · ${configuredCount} 个已配置</span>
-            <span class="chevron" aria-hidden="true">⌄</span>
-          </button>
-        </div>
-        ${collapsed ? "" : `<div class="grid">${cards}</div>${revealControl}`}
-      </div>`;
+  if (typeof morphdom === "function") {
+    const wrap = document.createElement("div");
+    wrap.className = "hero-stats";
+    wrap.id = "heroStats";
+    wrap.innerHTML = next;
+    morphdom(el, wrap, { childrenOnly: true });
+  } else {
+    el.innerHTML = next;
   }
-  document.getElementById("content").innerHTML = html || `<div class="empty-state">没有匹配“${esc(searchQuery)}”的渠道</div>`;
+
+  const todayEl = document.getElementById("todayStats");
+  if (!todayEl) return;
+  const todayNext = `
+    <div class="hero-stat" title="今天统一网关处理的输入与输出 tokens"><div class="num">${todayTokensDisplay}</div><div class="label">今日消耗 tokens</div></div>
+    <div class="hero-stat" title="可重置免费渠道今日用量按模型公示单价折算的市场等值"><div class="num">${savingsDisplay}</div><div class="label">今日预计节省</div></div>
+  `;
+  if (typeof morphdom === "function") {
+    const todayWrap = document.createElement("aside");
+    todayWrap.className = "today-stats";
+    todayWrap.id = "todayStats";
+    todayWrap.innerHTML = todayNext;
+    morphdom(todayEl, todayWrap, { childrenOnly: true });
+  } else {
+    todayEl.innerHTML = todayNext;
+  }
+}
+
+function buildChannelListHtml() {
+  // 档位筛选：公司在该档有模型 → 显示；卡片内仍列出同公司全部档模型（中/弱沉底）
+  let matching = channels.filter(matchesSearch);
+  if (activeTier !== "全部") {
+    const ids = new Set(
+      matching.filter(c => c.tier === activeTier).map(c => c.company_id || c.env_var)
+    );
+    matching = matching.filter(c => ids.has(c.company_id || c.env_var));
+  }
+  // 分组用「该公司全部渠道」（含其它档），避免筛选后丢掉中/弱列表
+  const companyGroups = groupChannelsByCompany(matching).map(g => {
+    const full = channels.filter(
+      c => (c.company_id || c.env_var) === g.key && matchesSearch(c)
+    );
+    return { ...g, items: full.length ? full.slice().sort(modelSort) : g.items };
+  });
+  if (!companyGroups.length) {
+    return `<div class="empty-state" id="channels-empty">没有匹配“${esc(searchQuery)}”的公司</div>`;
+  }
+  const configuredCompanies = companyGroups.filter(g => g.items.some(c => c.is_configured)).length;
+  const cards = companyGroups.map(group => {
+    let ch = selectedChannelForCompany(group);
+    if (activeTier !== "全部" && ch.tier !== activeTier) {
+      const prefer = group.items.find(c => c.tier === activeTier);
+      if (prefer) ch = prefer;
+    }
+    return renderCard(ch, group.items, group.key);
+  }).join("");
+  const tierHint = activeTier === "顶级"
+    ? "「顶级」· 已配置优先"
+    : activeTier === "全部"
+      ? "额度优先 · 有顶级沉底"
+      : `「${activeTier}」· 有顶级沉底`;
+  return `
+    <div class="tier-section" id="tier-section-companies">
+      <div class="tier-heading">
+        <div class="tier-toggle" style="cursor:default">
+          <h2>公司</h2>
+          <span class="count">${companyGroups.length} 家 · ${configuredCompanies} 家已配置 · ${tierHint}</span>
+        </div>
+      </div>
+      <div class="grid" id="tier-grid-companies">${cards}</div>
+    </div>`;
+}
+
+function render(options = {}) {
+  renderQueued = false;
+  const scroller = document.scrollingElement || document.documentElement || null;
+  const prevScroll = options.preserveScroll && scroller ? scroller.scrollTop : null;
+
+  renderOptimalBanner();
+  renderHeroStats();
+  // 根治：morph 就地更新；options.force 时强制替换编辑中的卡片
+  applyChannelHtml(buildChannelListHtml(), options);
+  restoreProbeSlots();
 
   const collapseButton = document.getElementById("collapseAll");
-  collapseButton.textContent = tiers.every(tier => collapsedTiers.has(tier)) ? "全部展开" : "全部折叠";
+  if (collapseButton) {
+    const tiers = activeTier === "全部" ? TIER_ORDER : [activeTier];
+    collapseButton.textContent = tiers.every(tier => collapsedTiers.has(tier)) ? "全部展开" : "全部折叠";
+  }
+
+  if (prevScroll != null && scroller) scroller.scrollTop = prevScroll;
 }
 
 document.getElementById("tabs").addEventListener("click", (e) => {
@@ -1312,18 +3032,27 @@ document.getElementById("tabs").addEventListener("click", (e) => {
   document.querySelectorAll(".tab").forEach(b => b.classList.remove("active"));
   btn.classList.add("active");
   activeTier = btn.dataset.tier;
-  render();
+  render({ preserveScroll: true });
 });
 
 document.getElementById("channelSearch").addEventListener("input", (e) => {
   searchQuery = e.target.value.trim().toLowerCase();
   if (searchQuery) collapsedTiers.clear();
-  render();
+  render({ preserveScroll: true });
 });
 
 document.getElementById("collapseAll").addEventListener("click", toggleAllTiers);
 
-// 每 5 秒从后端拉一次真实数据；中间用本地倒计时让秒数看起来连续跳动
+document.addEventListener("focusout", () => {
+  setTimeout(() => {
+    if (renderQueued && !cardHasOpenEditor(document.getElementById("content"))) {
+      renderQueued = false;
+      render({ preserveScroll: true });
+    }
+  }, 0);
+});
+
+// 秒级只改倒计时/圆环节点，绝不触碰列表结构
 function localTick() {
   for (const ch of channels) {
     if (ch.usage && ch.usage.seconds_until_minute_reset > 0) {
@@ -1336,12 +3065,13 @@ function localTick() {
       ch.optimal_seconds_until_expiry -= 1;
     }
   }
-  render();
+  patchLiveCountdowns();
 }
 
 fetchChannels();
 checkGatewayStatus();
-setInterval(fetchChannels, 5000);
+loadClientKeys();
+setInterval(() => fetchChannels(), 10000);
 setInterval(checkGatewayStatus, 30000);
 tickInterval = setInterval(localTick, 1000);
 </script>

@@ -27,8 +27,6 @@ from __future__ import annotations
 import logging
 from typing import NamedTuple, Optional
 
-import litellm
-
 logger = logging.getLogger("ai_gateway_matrix.pricing")
 
 
@@ -104,6 +102,7 @@ def compute_cost(
         return None, "unknown"
 
     try:
+        import litellm  # 延迟导入：dashboard 镜像可能无 litellm
         cost = litellm.completion_cost(completion_response=response_obj, model=model)
         if cost is not None and cost > 0:
             return float(cost), "litellm"

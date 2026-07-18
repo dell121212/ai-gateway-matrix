@@ -35,6 +35,8 @@ services:
       - ./gateway:/app/gateway:ro
       - ./provider_manifest.yaml:/app/provider_manifest.yaml:ro
       - ./state:/app/state:ro
+      # 仪表盘写入的 Key 在此文件；网关需能读到并热加载（env_file 只在启动时注入一次）
+      - ./.env:/app/.env:ro
     env_file:
       - .env
     environment:
@@ -54,6 +56,7 @@ services:
       - SOURCE_GATEWAY_CONFIG_PATH=/app/config.yaml
       - GATEWAY_CONFIG_PATH=/app/runtime-config.yaml
       - PROVIDER_DISCOVERY_OUTPUT=/app/state/provider-discovery.json
+      - GATEWAY_DOTENV_PATH=/app/.env
     security_opt:
       - no-new-privileges:true
     entrypoint: ["python", "-m", "gateway.runtime_launcher"]
@@ -133,7 +136,8 @@ services:
       - ./config.yaml:/app/config.yaml   # 读写：优先级修改功能需要写入这个文件
       - ./gateway:/app/gateway:ro
       - ./provider_manifest.yaml:/app/provider_manifest.yaml:ro
-      - ./state:/app/state:ro
+      # state 需可写：客户端密钥登记簿、UI 设置（client-keys.json / ui-settings.json）
+      - ./state:/app/state
       - ./.env:/app/.env            # 读写：仪表盘要往这里写你填的 key
       - ./dashboard:/app/dashboard:ro
     environment:
@@ -172,11 +176,29 @@ services:
     # run.sh 的用户身份，既能写入 ./state，也不需要 chmod 777 或 sudo。
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     volumes:
-      - ./config.yaml:/app/config.yaml:ro
+      # 模型目录确认是改名时，autofix 需要精确更新对应 deployment。
+      - ./config.yaml:/app/config.yaml
       - ./gateway:/app/gateway:ro
+      - ./dashboard:/app/dashboard:ro
       - ./scripts:/app/scripts:ro
       - ./state:/app/state
-    command: ["python", "-m", "scripts.provider_discovery", "--watch", "--interval", "3600", "--output", "/app/state/provider-discovery.json"]
+      # Dashboard 可随时新增/轮换 Key；巡检每轮从该文件热加载，不能只依赖
+      # 容器创建时冻结的 env_file 环境。
+      - ./.env:/app/.env:ro
+    # --autofix：模型改名自愈；--free-tier-refresh：免费额度文档跟进（可调顶级模型裁决）
+    command:
+      [
+        "python",
+        "-m",
+        "scripts.provider_discovery",
+        "--watch",
+        "--interval",
+        "3600",
+        "--autofix",
+        "--free-tier-refresh",
+        "--output",
+        "/app/state/provider-discovery.json",
+      ]
     security_opt:
       - no-new-privileges:true
     cap_drop:

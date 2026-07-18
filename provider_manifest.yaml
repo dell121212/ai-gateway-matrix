@@ -1,5 +1,5 @@
 version: 1
-catalog_reviewed_at: "2026-07-14"
+catalog_reviewed_at: "2026-07-18"
 
 # 这份文件只存“调度与数据政策”，真实密钥仍只存在 .env。
 # sensitive_allowed=true 是项目管理员的显式选择，不由 trust=official 自动推导。
@@ -31,6 +31,12 @@ providers:
   MISTRAL_KEY_2: {trust: official, sensitive_allowed: false, data_policy: review_required}
 
   SILICONFLOW_API_KEY: {trust: third_party}
+  MODELSCOPE_API_KEY: {trust: third_party, sensitive_allowed: false, data_policy: review_required}
+  CLOUDFLARE_API_TOKEN: {trust: third_party, sensitive_allowed: false, data_policy: review_required}
+  KILO_API_KEY: {trust: observation, sensitive_allowed: false, data_policy: review_required}
+  LLM7_API_KEY: {trust: observation, sensitive_allowed: false, data_policy: review_required}
+  COHERE_API_KEY: {trust: official, sensitive_allowed: false, data_policy: review_required}
+  AION_API_KEY: {trust: observation, sensitive_allowed: false, data_policy: review_required}
   OPENROUTER_API_KEY: {trust: third_party}
   GITHUB_TOKEN: {trust: third_party}
   HF_TOKEN: {trust: third_party}

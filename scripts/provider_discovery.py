@@ -11,6 +11,7 @@ import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 from typing import Any, Optional
 
 import requests
@@ -24,8 +25,15 @@ DEFAULT_OUTPUT = Path(os.environ.get("PROVIDER_DISCOVERY_OUTPUT", ROOT / "state/
 
 
 def load_env(path: Path) -> None:
+    """Reload the dashboard-managed dotenv file into this long-running process.
+
+    ``docker compose env_file`` is evaluated only when the container starts, while
+    users can add or rotate provider keys from the dashboard at any time.  Always
+    replacing the process value here keeps the hourly model audit aligned with the
+    current file instead of permanently reporting newly-added keys as unconfigured.
+    """
     for key, value in env_file.read_env(path).items():
-        os.environ.setdefault(key, value)
+        os.environ[key] = value
 
 
 def _upstream_model_name(model: str) -> str:
@@ -47,6 +55,8 @@ NATIVE_CATALOGS = {
 
 def _catalog_for(model: str, api_base: Any) -> tuple[Optional[str], str]:
     if isinstance(api_base, str) and api_base:
+        if "models.github.ai/inference" in api_base:
+            return "https://models.github.ai/catalog", "bearer"
         return api_base, "bearer"
     provider = model.split("/", 1)[0] if "/" in model else ""
     return NATIVE_CATALOGS.get(provider, (None, "bearer"))
@@ -103,7 +113,14 @@ def audit(config_path: Path) -> dict[str, Any]:
                     }
                 return group_results
             payload = response.json()
-            entries = payload.get("data", payload if isinstance(payload, list) else [])
+            if isinstance(payload, dict):
+                # OpenAI-compatible APIs usually return ``data``; Gemini returns
+                # ``models``.  Treat both as first-class catalogs.
+                entries = payload.get("data") or payload.get("models") or []
+            elif isinstance(payload, list):
+                entries = payload
+            else:
+                entries = []
             available = set()
             for entry in entries:
                 if not isinstance(entry, dict):
@@ -111,10 +128,28 @@ def audit(config_path: Path) -> dict[str, Any]:
                 identifier = entry.get("id") or entry.get("name")
                 if identifier:
                     identifier = str(identifier)
-                    available.add(identifier.split("/", 1)[1] if identifier.startswith("models/") else identifier)
+                    normalized = identifier.split("/", 1)[1] if identifier.startswith("models/") else identifier
+                    available.add(normalized)
+                    if "/" in normalized:
+                        # GitHub catalog ids include a publisher (openai/gpt-4o-mini),
+                        # while LiteLLM's first openai/ segment is a provider prefix.
+                        available.add(normalized.rsplit("/", 1)[-1])
+                    # The legacy GitHub/Azure catalog returns AzureML resource
+                    # URIs rather than the chat-completion model slug.
+                    match = re.search(r"/models/([^/]+)/versions/", identifier, re.I)
+                    if match:
+                        available.add(match.group(1))
             for member in members:
+                # 智谱当前文档与真实 completion 均确认 Flash 可用，但该账号的
+                # /models 目录不列免费 Flash；不要把“未列出”误判成“已下线”。
+                catalog_hidden_available = (
+                    "open.bigmodel.cn" in api_base
+                    and member["upstream_model"].lower() == "glm-4.7-flash"
+                )
                 group_results[member["display_id"]] = {
-                    "status": "available" if member["upstream_model"] in available else "model_missing",
+                    "status": "available" if (
+                        member["upstream_model"] in available or catalog_hidden_available
+                    ) else "model_missing",
                     "catalog_size": len(available),
                 }
         except (requests.RequestException, ValueError) as exc:
@@ -156,20 +191,52 @@ def write_report(path: Path, report: dict[str, Any]) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="上游模型目录只读审计")
+    parser = argparse.ArgumentParser(description="上游模型目录审计 + 可选自动改名")
     parser.add_argument("--config", type=Path, default=ROOT / "config.yaml")
     parser.add_argument("--env", type=Path, default=ROOT / ".env")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--watch", action="store_true")
     parser.add_argument("--interval", type=int, default=3600)
+    parser.add_argument(
+        "--autofix",
+        action="store_true",
+        help="对 model_missing 尝试模糊匹配+强模型裁决并写回 config.yaml",
+    )
+    parser.add_argument(
+        "--free-tier-refresh",
+        action="store_true",
+        help="跟进免费额度文档变动（可调用顶级/强模型解析）",
+    )
     args = parser.parse_args()
     if args.interval < 300:
         parser.error("--interval 不能小于 300 秒，避免频繁请求上游目录")
-    load_env(args.env)
     while True:
+        load_env(args.env)
         report = audit(args.config)
         write_report(args.output, report)
         print(f"[{report['checked_at']}] 上游模型目录审计完成，共 {len(report['results'])} 个 deployment", flush=True)
+        if args.autofix:
+            try:
+                import asyncio
+                from gateway.model_autofix import autofix_missing_from_discovery
+                fixed = asyncio.run(autofix_missing_from_discovery(report.get("results") or {}))
+                if fixed:
+                    print(f"  model-autofix 已改名 {len(fixed)} 个 deployment", flush=True)
+                    # 改名后重审一次，刷新 available 状态
+                    report = audit(args.config)
+                    write_report(args.output, report)
+            except Exception as exc:
+                print(f"  model-autofix 跳过: {type(exc).__name__}: {exc}", flush=True)
+        # 免费额度跟进：默认每轮都试（内部有文档拉取+可选顶级模型裁决）
+        if args.free_tier_refresh:
+            try:
+                import asyncio
+                from gateway.free_tier_refresh import refresh_all
+                fr = asyncio.run(refresh_all())
+                n = len((fr.get("providers") or {}))
+                print(f"  free-tier refresh：已覆盖 {n} 家厂商限额", flush=True)
+            except Exception as exc:
+                print(f"  free-tier refresh 跳过: {type(exc).__name__}: {exc}", flush=True)
         if not args.watch:
             return 0
         time.sleep(args.interval)

@@ -102,21 +102,28 @@ async def mark_failure(display_id: str, error_class: str) -> None:
     client = usage_tracker.get_client()
     if client is None:
         return
+    # rate_limit / 拥挤（含智谱「访问量过大」）：只短回避，稍后必须再试。
+    # 切勿用小时级 TTL，否则免费层一抖就「再也用不上」。
     ttl_by_class = {
-        "auth_error": 86400,
-        "quota_error": 3600,
-        "rate_limit": 60,
-        "timeout": 30,
-        "router_exhausted": 30,
-        "unknown": 20,
+        "auth_error": 86400,       # 真·坏 Key：长冷却
+        "quota_zero": 86400,       # 明确 limit=0：至少等到下一个日窗口再探
+        "quota_probe": 86400,      # 已知零额度模型：先熔断，成功回调再自动清除
+        "quota_error": 21600,      # 日/月额度类：6 小时后再探
+        "quality_error": 600,      # 模板泄漏/乱码：临时隔离该推理端点
+        "rate_limit": 8,           # 临时拥挤：约 8 秒后再进候选
+        "timeout": 15,
+        "router_exhausted": 10,
+        "unknown": 12,
     }
     ttl = ttl_by_class.get(error_class, 20)
+    key = f"{KEY_PREFIX}:cooldown:{_safe_id(display_id)}"
     try:
-        await client.set(
-            f"{KEY_PREFIX}:cooldown:{_safe_id(display_id)}",
-            error_class,
-            ex=ttl,
-        )
+        # 后续的短错误不能覆盖已存在的长熔断（例如 quota_zero 后又收到
+        # cooldown_active）。只延长，不缩短。
+        current_ttl = await client.ttl(key)
+        if isinstance(current_ttl, int) and current_ttl >= ttl:
+            return
+        await client.set(key, error_class, ex=ttl)
     except Exception:
         pass
 

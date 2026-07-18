@@ -7,33 +7,14 @@
 先看一眼任务内容，决定改写 data["model"] 为 "fast-pool" / "free-pool" /
 "strong-model-pool" / "trusted-pool" 之一。
 
-设计原则（v4 更新）：
-  · 敏感内容检测和"极短输入直接走快速池"这两条仍然是纯规则、零延迟、
-    零成本，因为没必要为了这两种情况多付一次网络往返。
-  · 除此之外，任务档位判断交给 gateway/llm_classifier.py 里指定的模型
-    （Groq Llama-3.3-70B）来做，而不是纯靠关键词/长度猜——这是
-    你要的"任务类别先交给指定模型判断"。
-  · decide_pool() 里原来那套关键词/正则/token数启发式规则完整保留，
-    但角色从"主路径"降级为"分类器不可用时的兜底"：分类器超时、
-    报错、或返回格式不对，都会自动回退到这套规则，不会让请求失败。
-  · 这一层只负责"要不要升级"，"免费池里具体用哪个渠道"交给
-    LiteLLM Router 的 RPM/预算/优先级逻辑去处理，两者不重叠。
-  · 跟 config.yaml 里的 context_window_fallbacks（按 token 数硬性触发）
-    是互补关系：这里处理"分类器/关键词/长度判断出来的复杂度"，token 数
-    兜底处理"分类器和启发式都没判断出来、但内容其实超长"的漏判。
-
-══════════════════════════════════════════════════════════════════════
-v4 新增（引入指定模型分类）：
-  1. 新增 gateway/llm_classifier.py，指定 Groq Llama-3.3-70B 作为专职分类模型，
-     用"具名档位 + 一句话判据"的 prompt（参照 NVIDIA-AI-Blueprints/
-     llm-router 蓝图的做法）判断任务属于 弱/中/强 中的哪一档。
-  2. 新增 decide_pool_with_classifier()，作为请求时真正使用的入口：
-     敏感检测 → 极短输入直接 fast-pool → 分类器判断 → 分类器失败则回退
-     decide_pool() 里的启发式规则。
-  3. decide_pool() 本身不变，继续保留给 scripts/test_gateway.py 的离线结构性
-     自检使用（不需要真实网络/API key 就能验证规则逻辑本身没写错）。
-  4. 新增 stats 计数器：classifier_used / classifier_fallback_to_heuristic /
-     classifier_skipped_trivial，方便观察分类器实际命中率和降级频率。
+设计原则（智能模式 = 两段式）：
+  · **先用强模型快速判断提问强度**（gateway/llm_classifier.py），
+    再 **内部决定** 用弱/中/强池里的哪个模型真正回答。
+  · 敏感内容检测与「极短输入直接 fast-pool」仍是纯规则（零延迟）；
+    其余正常提问走强模型分诊。
+  · decide_pool() 启发式完整保留，仅作分诊失败时的兜底。
+  · 池内具体渠道由 LiteLLM Router（simple-shuffle 等）选择。
+  · 与 context_window_fallbacks 互补：超长上下文硬升 strong。
 
 ══════════════════════════════════════════════════════════════════════
 v3 新增（安全加固）：
@@ -75,6 +56,8 @@ v2 修复清单（对照 Manus 验证报告 + LiteLLM 1.90.1 源码深挖）：
 
 from __future__ import annotations
 
+import ast
+import asyncio
 import logging
 import os
 import re
@@ -84,6 +67,7 @@ import litellm
 from litellm.integrations.custom_logger import CustomLogger
 
 from . import (
+    env_sync,
     llm_classifier,
     optimal_channels,
     pricing,
@@ -94,11 +78,78 @@ from . import (
 
 logger = logging.getLogger("ai_gateway_matrix.router_hook")
 
-FAST_POOL = "fast-pool"
-FREE_POOL = "free-pool"
-STRONG_POOL = "strong-model-pool"
+# 网关进程启动后台热加载：仪表盘改 Key/配置后无需 bash run.sh
+try:
+    env_sync.start_background_watcher()
+except Exception:
+    pass
+
+FAST_POOL = "fast-pool"              # 弱 0.5B–8B
+FREE_POOL = "free-pool"              # 中 9B–30B
+STRONG_POOL = "strong-model-pool"    # 强 31B–100B
+ELITE_POOL = "elite-model-pool"      # 顶级 100B+
 TRUSTED_POOL = "trusted-pool"
 AUTO_ROUTE = "auto-route"
+ALL_CAPABILITY_POOLS = (FAST_POOL, FREE_POOL, STRONG_POOL, ELITE_POOL)
+POOL_RANK = {
+    FAST_POOL: 0,
+    FREE_POOL: 1,
+    STRONG_POOL: 2,
+    ELITE_POOL: 3,
+}
+
+# 客户端「模式」别名 → 内部路由目标
+# 智能：按提问选档；弱/中/强：只使用该档位（敏感内容仍强制 trusted）
+MODE_INTELLIGENT = frozenset({
+    AUTO_ROUTE,
+    "mode-intelligent",
+    "intelligent",
+    "smart",
+    "智能",
+})
+MODE_WEAK = frozenset({
+    FAST_POOL,
+    "mode-weak",
+    "weak",
+    "weak-route",
+    "tier-weak",
+    "弱",
+})
+MODE_MID = frozenset({
+    FREE_POOL,
+    "mode-mid",
+    "mode-medium",
+    "mid",
+    "medium",
+    "mid-route",
+    "tier-mid",
+    "中",
+})
+MODE_STRONG = frozenset({
+    STRONG_POOL,
+    "mode-strong",
+    "strong",
+    "strong-route",
+    "tier-strong",
+    "强",
+})
+MODE_ELITE = frozenset({
+    ELITE_POOL,
+    "mode-elite",
+    "elite",
+    "elite-route",
+    "tier-elite",
+    "top",
+    "顶级",
+})
+# LiteLLM model_list 里必须注册的别名（见 config.yaml / runtime_launcher）
+PUBLIC_MODE_ALIASES = (
+    "mode-intelligent",
+    "mode-weak",
+    "mode-mid",
+    "mode-strong",
+    "mode-elite",
+)
 
 # ──────────────────────────────────────────────────────────────
 #  敏感内容检测（v3 新增）
@@ -137,6 +188,9 @@ ESCALATE_KEYWORDS = [
     "重构", "refactor", "整个项目", "整体架构", "debug整体", "架构设计",
     "迁移", "migrate", "性能优化", "安全审计", "全量", "批量处理",
     "复杂逻辑", "深度分析", "代码审查", "code review", "技术方案",
+    "代码分析", "故障排查", "根因分析", "修复建议", "死锁", "竞态条件",
+    "内存泄漏", "性能瓶颈", "并发问题", "debug", "deadlock", "race condition",
+    "root cause", "troubleshoot",
     "数据库设计", "系统设计", "分布式", "微服务", "高并发",
     # 英文
     "refactor", "architecture", "migration", "optimize", "security audit",
@@ -155,14 +209,43 @@ ESCALATE_PATTERNS = [
     re.compile(r"(?:超过|over|more than)\s*(\d+)\s*(?:个函数|functions|个类|classes)", re.IGNORECASE),
 ]
 
-# 触发升级到 strong-model-pool 的阈值
-TOKEN_THRESHOLD = 8000       # 粗估 token 数超过此值则升级
-CHAR_THRESHOLD = 30000       # 字符数超过此值则升级（token 估算的 fallback）
-FILE_COUNT_THRESHOLD = 5     # 提到超过 N 个文件则升级
+# 触发升级的阈值（弱→中→强→顶级）
+TOKEN_THRESHOLD = 8000         # ≥ 此 → 强档
+ELITE_TOKEN_THRESHOLD = 24000  # ≥ 此 → 顶级
+CHAR_THRESHOLD = 30000         # ≥ 此 → 强档
+ELITE_CHAR_THRESHOLD = 90000   # ≥ 此 → 顶级
+FILE_COUNT_THRESHOLD = 5       # 提到超过 N 个文件则升级到强
 
-# 路由到 fast-pool 的阈值（短输入走超快推理 Groq/Cerebras）
-FAST_TOKEN_THRESHOLD = 200   # 粗估 token 数低于此值 → 快速池
-FAST_CHAR_THRESHOLD = 600    # 字符数低于此值 → 快速池
+# 路由到弱档的阈值
+FAST_TOKEN_THRESHOLD = 200   # 粗估 token 数低于此值 → 弱档
+FAST_CHAR_THRESHOLD = 600    # 字符数低于此值 → 弱档
+
+# 短并不等于简单。只有明确的寒暄、算术或提取/分类任务才允许直接落到弱档；
+# 写作、翻译和普通编程至少用中档。代码诊断类由 ESCALATE_KEYWORDS 直接升强。
+TRIVIAL_TASK_PATTERNS = (
+    re.compile(r"^\s*(?:hi|hello|hey|你好|您好|嗨|在吗)[!！,.，。?？\s]*$", re.IGNORECASE),
+    re.compile(r"^\s*(?:请)?(?:计算|算一下|求值)?\s*[\d\s()+\-*/%.]+(?:等于多少|是多少)?[?？\s]*$"),
+    re.compile(r"^\s*(?:请)?(?:判断|分类|提取|识别).{0,80}$", re.IGNORECASE | re.DOTALL),
+)
+
+MID_FLOOR_PATTERNS = (
+    re.compile(r"(?:写一|写个|撰写|改写|润色|扩写|文案|邮件|总结|翻译|translate|rewrite|polish)", re.IGNORECASE),
+    re.compile(
+        r"(?:写代码|编程|函数|脚本|正则|sql|python|javascript|typescript|java|golang|rust|"
+        r"api\b|algorithm|implement|code\b)",
+        re.IGNORECASE,
+    ),
+)
+
+QUALITY_GUARDED_MODELS = ("qwen2.5-7b-instruct",)
+QUALITY_GUARDED_BASES = ("api.siliconflow.cn",)
+UNIVERSAL_QUALITY_FAILURES = {
+    "empty_output",
+    "chat_template_echo",
+    "mojibake",
+    "arithmetic_mismatch",
+    "repeated_lines",
+}
 
 
 class ComplexityRouterHook(CustomLogger):
@@ -195,6 +278,7 @@ class ComplexityRouterHook(CustomLogger):
         # 只是让"限时优先"功能自动失效，退回正常的池子路由。
         self._channel_registry: dict[str, dict] = {}
         self._provider_registry: Optional[provider_registry.ProviderRegistry] = None
+        self._registry_config_mtime_ns: Optional[int] = None
         self._load_channel_registry()
 
     def _load_channel_registry(self) -> None:
@@ -204,6 +288,12 @@ class ComplexityRouterHook(CustomLogger):
         try:
             self._provider_registry = provider_registry.load_registry()
             self._channel_registry = dict(self._provider_registry.channels)
+            try:
+                self._registry_config_mtime_ns = (
+                    self._provider_registry.config_path.stat().st_mtime_ns
+                )
+            except OSError:
+                self._registry_config_mtime_ns = None
         except Exception as exc:
             logger.warning(
                 "[ai-gateway-matrix] 无法加载供应商注册表（%s: %s），"
@@ -212,6 +302,24 @@ class ComplexityRouterHook(CustomLogger):
             )
             return
         logger.info("[ai-gateway-matrix] 渠道注册表加载完成，共 %d 个渠道", len(self._channel_registry))
+
+    def _ensure_channel_registry_fresh(self) -> None:
+        """Reload the full catalog after a dashboard config edit.
+
+        Key-only changes are read from the hot-synchronised environment by
+        ``_is_configured``.  Model, pool, priority and trust-policy changes live
+        in the source YAML and require rebuilding the cached registry.
+        """
+        registry = self._provider_registry
+        config_path = getattr(registry, "config_path", None)
+        if config_path is None:
+            return
+        try:
+            current_mtime_ns = config_path.stat().st_mtime_ns
+        except OSError:
+            return
+        if current_mtime_ns != self._registry_config_mtime_ns:
+            self._load_channel_registry()
 
     # ──────────────────────────────────────────────────────────────
     #  核心路由逻辑
@@ -341,6 +449,23 @@ class ComplexityRouterHook(CustomLogger):
 
         return None
 
+    @staticmethod
+    def _is_trivial_task(text: str) -> bool:
+        return any(pattern.search(text) for pattern in TRIVIAL_TASK_PATTERNS)
+
+    @staticmethod
+    def _minimum_pool_for_text(text: str) -> Optional[str]:
+        """返回任务不可被分类器降穿的档位下限；无明确下限时返回 None。"""
+        if any(pattern.search(text) for pattern in MID_FLOOR_PATTERNS):
+            return FREE_POOL
+        return None
+
+    @staticmethod
+    def _higher_pool(first: str, second: Optional[str]) -> str:
+        if second is None:
+            return first
+        return second if POOL_RANK.get(second, -1) > POOL_RANK.get(first, -1) else first
+
     def decide_pool(self, data: dict) -> str:
         """根据请求内容决定路由到哪个池子（纯规则版本）。
 
@@ -381,75 +506,106 @@ class ComplexityRouterHook(CustomLogger):
         if quick_result is not None:
             return quick_result
 
-        # 规则 4：token 数超过阈值 → 升级到 strong-model-pool
+        # 规则 4–5：超长 → 顶级；较长 → 强
         token_count = self._estimate_token_count(text)
-        if token_count >= TOKEN_THRESHOLD:
+        if token_count >= ELITE_TOKEN_THRESHOLD or len(text) >= ELITE_CHAR_THRESHOLD:
             logger.info(
-                "[ai-gateway-matrix] 升级到 strong-model-pool（粗估 %d tokens，超过阈值 %d）",
-                token_count, TOKEN_THRESHOLD
+                "[ai-gateway-matrix] 升级到 elite-model-pool（粗估 %d tokens / %d 字）",
+                token_count, len(text),
+            )
+            return ELITE_POOL
+        if token_count >= TOKEN_THRESHOLD or len(text) >= CHAR_THRESHOLD:
+            logger.info(
+                "[ai-gateway-matrix] 升级到 strong-model-pool（粗估 %d tokens / %d 字）",
+                token_count, len(text),
             )
             return STRONG_POOL
 
-        # 规则 5：字符数超过阈值（token 估算的 fallback）→ 升级到 strong-model-pool
-        if len(text) >= CHAR_THRESHOLD:
-            logger.info(
-                "[ai-gateway-matrix] 升级到 strong-model-pool（%d 字符，超过阈值 %d）",
-                len(text), CHAR_THRESHOLD
-            )
-            return STRONG_POOL
+        floor_pool = self._minimum_pool_for_text(text)
 
-        # 规则 6：超短输入 → 快速池（Groq/Cerebras 超快推理）
-        if token_count < FAST_TOKEN_THRESHOLD and len(text) < FAST_CHAR_THRESHOLD:
+        # 规则 6：只有明确的简单短任务才走弱档；其它短任务至少走中档。
+        if (
+            token_count < FAST_TOKEN_THRESHOLD
+            and len(text) < FAST_CHAR_THRESHOLD
+            and self._is_trivial_task(text)
+        ):
             logger.info(
-                "[ai-gateway-matrix] 路由到 fast-pool（%d tokens / %d 字符，短输入走快速推理）",
+                "[ai-gateway-matrix] 路由到 fast-pool（%d tokens / %d 字符，明确简单任务）",
                 token_count, len(text)
             )
             return FAST_POOL
 
-        # 默认：留在免费池
+        if floor_pool is not None:
+            return floor_pool
+
+        # 默认：中档
         return FREE_POOL
 
     @staticmethod
     def _is_configured(channel: dict) -> bool:
+        # 同步仪表盘写入的 .env，再判断（否则会出现「已填 Key 仍提示无渠道」）
+        try:
+            from gateway import env_sync
+            env_sync.ensure_synced()
+        except Exception:
+            pass
         env_var = channel.get("env_var")
-        value = os.environ.get(env_var or "", "").strip()
-        return bool(value) and not value.startswith("dummy-")
+        if not env_var:
+            return False
+        value = os.environ.get(env_var, "").strip()
+        try:
+            from gateway.runtime_launcher import _is_placeholder_credential
+            return not _is_placeholder_credential(value)
+        except Exception:
+            return bool(value) and not value.startswith("dummy-")
 
     async def _resolve_capability_target(self, pool: str, requirements: set[str]) -> str:
         if self._provider_registry is None:
             raise RuntimeError("供应商注册表不可用，拒绝在未知凭据状态下猜测路由")
-        # 档位只允许向上兜底：快速请求可借用免费/强档，免费请求可借用强档；
-        # 强任务绝不能为了“有结果”而静默降到小模型。这样自用时只配置一个
-        # 强档渠道也能立刻使用，同时仍保留复杂任务的质量边界。
+        # 可用性优先（个人多免费 Key）：
+        # 优先用目标档；该档没有任何「已配置 Key」时，立刻换其它档，
+        # 而不是因为某一个免费模型倒闭/空 Key 就整次失败。
+        # 同池内多个 deployment 的 401/404 由 LiteLLM weighted failover + fallbacks 换 peer。
+        # 敏感请求仍只走 trusted，不在此扩展。
         fallback_pools = {
-            FAST_POOL: (FAST_POOL, FREE_POOL, STRONG_POOL),
-            FREE_POOL: (FREE_POOL, STRONG_POOL),
-            STRONG_POOL: (STRONG_POOL,),
+            FAST_POOL: (FAST_POOL, FREE_POOL, STRONG_POOL, ELITE_POOL),
+            FREE_POOL: (FREE_POOL, STRONG_POOL, ELITE_POOL, FAST_POOL),
+            STRONG_POOL: (STRONG_POOL, ELITE_POOL, FREE_POOL, FAST_POOL),
+            ELITE_POOL: (ELITE_POOL, STRONG_POOL, FREE_POOL, FAST_POOL),
         }.get(pool, (pool,))
         required = ", ".join(sorted(requirements - {"text"})) or "text"
         had_candidates = False
         for candidate_pool in fallback_pools:
             candidates = [
                 channel
-                for channel in self._provider_registry.candidates(candidate_pool, requirements)
+                for channel
+                in self._provider_registry.candidates(candidate_pool, requirements)
                 if self._is_configured(channel)
             ]
             if not candidates:
                 continue
             had_candidates = True
-            # 普通文本仍交给 LiteLLM Router 处理当前请求内的 retry/fallback；
-            # 容器启动器已排除空 Key，并把 priority 映射为官方 order。
+            # 普通文本：交给 Router 在池内换 peer、再按 config fallbacks 跨池；
+            # 这里只保证「至少有一个已配置 Key 的池」作为入口。
             if requirements == {"text"}:
                 if candidate_pool != pool:
-                    logger.info("[ai-gateway-matrix] %s 无可用渠道，向上回退到 %s", pool, candidate_pool)
+                    logger.info(
+                        "[ai-gateway-matrix] %s 无已配置渠道，改走 %s（可用性优先）",
+                        pool,
+                        candidate_pool,
+                    )
                 return candidate_pool
             selected = await quota_manager.choose_and_reserve(candidates)
             if selected is not None:
                 return selected["direct_model_name"]
 
         if had_candidates:
-            raise RuntimeError(f"支持 {required} 的已配置渠道当前额度均不可用")
-        raise RuntimeError(f"没有已配置且支持 {required} 的渠道，请先在仪表盘填写 API Key")
+            raise RuntimeError(
+                f"支持 {required} 的已配置渠道当前额度均不可用（已尝试各档位）"
+            )
+        raise RuntimeError(
+            f"没有已配置且支持 {required} 的渠道，请先在仪表盘填写至少一个有效 API Key"
+        )
 
     async def _sensitive_target(
         self, data: dict, requirements: set[str]
@@ -481,12 +637,14 @@ class ComplexityRouterHook(CustomLogger):
             raise RuntimeError("敏感请求需要的能力没有符合数据政策的可用渠道")
         return selected["direct_model_name"]
 
-    async def _pick_optimal_channel(self, requirements: set[str]) -> Optional[str]:
+    async def _pick_optimal_channel(
+        self, requirements: set[str], required_pool: str
+    ) -> Optional[str]:
         """检查是否存在仍然有效的"限时优先"渠道，有就返回它的直连 model_name。
 
         "有效"指：还没过期（Redis key 的 TTL 保证了这一点，list_optimal()
-        只会返回没过期的），而且这一分钟还没打满 RPM。多个标记同时存在时，
-        按最快过期的优先尝试，都打满了才放弃、回退到正常的池子路由。
+        只会返回没过期的），档位不低于任务所需档位，而且这一分钟还没打满
+        RPM。多个标记同时存在时按最快过期的优先尝试，都不可用才回退到正常池。
         """
         try:
             flagged = await optimal_channels.list_optimal()
@@ -500,6 +658,15 @@ class ComplexityRouterHook(CustomLogger):
             if channel is None:
                 continue  # 标记的渠道不在当前 config.yaml 里（比如渠道被删了），跳过
             if not self._is_configured(channel):
+                continue
+            channel_pool = str(channel.get("pool") or "")
+            if POOL_RANK.get(channel_pool, -1) < POOL_RANK.get(required_pool, 0):
+                logger.info(
+                    "[ai-gateway-matrix] 限时优先渠道 %s 属于 %s，低于任务所需 %s，跳过",
+                    display_id,
+                    channel_pool,
+                    required_pool,
+                )
                 continue
             capabilities = channel.get("capabilities") or {}
             if any(not capabilities.get(requirement, False) for requirement in requirements):
@@ -517,23 +684,25 @@ class ComplexityRouterHook(CustomLogger):
 
         return None
 
-    async def decide_pool_with_classifier(self, data: dict) -> str:
-        """请求时真正使用的路由决策入口（v6 更新）。
+    async def _resolve_pool_with_optimal(
+        self, pool: str, requirements: set[str]
+    ) -> str:
+        """优先使用能够覆盖任务档位的标记渠道，否则回到正常池。"""
+        optimal_target = await self._pick_optimal_channel(requirements, pool)
+        if optimal_target is not None:
+            self._stats["routed_to_optimal"] += 1
+            return optimal_target
+        return await self._resolve_capability_target(pool, requirements)
 
-        按优先级：
-          1. 敏感内容检测（不经过分类器/限时优先，命中就直接 trusted-pool——
-             隐私优先于一切，包括"这个渠道额度快过期了，能省则省"这种
-             成本考虑）
-          2. 限时优先渠道检查：如果有渠道被标记为"限时优先"且还没过期、
-             这分钟还有 RPM 余量 → 无条件路由到它，不管这个请求原本该
-             分类到弱/中/强哪一档（这是"快过期的额度/活动额度，先烧完
-             再说"的行为）
-          3. 关键词/正则/文件数快速判断（零成本，命中就直接 strong-model-pool，
-             不管文本长短）
-          4. 极短输入且没命中规则 3 → 直接给 fast-pool
-          5. 交给 llm_classifier 指定的模型判断档位
-          6. 分类器超时/出错/返回格式不对 → 回退到 decide_pool() 里的
-             纯规则启发式
+    async def decide_pool_with_classifier(self, data: dict) -> str:
+        """智能模式主路径：强模型判强度 → 再选池作答。
+
+        优先级：
+          1. 敏感内容 → trusted-pool（隐私优先，不做分诊）
+          2. 规则/分诊先确定任务所需档位
+          3. 标记渠道档位不低于所需档位时优先使用
+          4. 标记渠道不可用时回到正常池
+          5. 分诊失败 → decide_pool() 启发式兜底
         """
         text = self._extract_text(data)
         requirements = (
@@ -545,41 +714,44 @@ class ComplexityRouterHook(CustomLogger):
             return sensitive_target
 
         if not text:
-            return await self._resolve_capability_target(FAST_POOL, requirements)
-
-        optimal_target = await self._pick_optimal_channel(requirements)
-        if optimal_target is not None:
-            self._stats["routed_to_optimal"] += 1
-            return optimal_target
+            return await self._resolve_pool_with_optimal(FAST_POOL, requirements)
 
         text_lower = text.lower()
         quick_result = self._quick_escalation_check(text, text_lower)
         if quick_result is not None:
-            return await self._resolve_capability_target(quick_result, requirements)
+            return await self._resolve_pool_with_optimal(quick_result, requirements)
 
         token_count = self._estimate_token_count(text)
         # 长度是硬约束，必须在只看前 2000 字符的外部分类器之前生效，
         # 避免长请求被截断样本误判成弱档。
+        if token_count >= ELITE_TOKEN_THRESHOLD or len(text) >= ELITE_CHAR_THRESHOLD:
+            return await self._resolve_pool_with_optimal(ELITE_POOL, requirements)
         if token_count >= TOKEN_THRESHOLD or len(text) >= CHAR_THRESHOLD:
-            return await self._resolve_capability_target(STRONG_POOL, requirements)
-        if token_count < FAST_TOKEN_THRESHOLD and len(text) < FAST_CHAR_THRESHOLD:
+            return await self._resolve_pool_with_optimal(STRONG_POOL, requirements)
+        floor_pool = self._minimum_pool_for_text(text)
+        if (
+            token_count < FAST_TOKEN_THRESHOLD
+            and len(text) < FAST_CHAR_THRESHOLD
+            and self._is_trivial_task(text)
+        ):
             self._stats["classifier_skipped_trivial"] += 1
             logger.info(
-                "[ai-gateway-matrix] 输入过短（%d tokens / %d 字符），跳过分类器直接走 fast-pool",
+                "[ai-gateway-matrix] 明确简单短任务（%d tokens / %d 字符），跳过分类器直接走 fast-pool",
                 token_count, len(text),
             )
-            return await self._resolve_capability_target(FAST_POOL, requirements)
+            return await self._resolve_pool_with_optimal(FAST_POOL, requirements)
 
         pool = await llm_classifier.classify_task(text)
         if pool is not None:
             self._stats["classifier_used"] += 1
-            return await self._resolve_capability_target(pool, requirements)
+            pool = self._higher_pool(pool, floor_pool)
+            return await self._resolve_pool_with_optimal(pool, requirements)
 
         # 分类器不可用/失败 → 回退到纯规则启发式（decide_pool 内部会重新走一遍
         # 敏感检测/关键词/正则/文件数/token 数判断；这里不重复造轮子）
         self._stats["classifier_fallback_to_heuristic"] += 1
         fallback_pool = self.decide_pool(data)
-        return await self._resolve_capability_target(fallback_pool, requirements)
+        return await self._resolve_pool_with_optimal(fallback_pool, requirements)
 
     # ──────────────────────────────────────────────────────────────
     #  LiteLLM Hook 接口实现
@@ -602,6 +774,14 @@ class ComplexityRouterHook(CustomLogger):
         """
         self._stats["total_requests"] += 1
 
+        # 仪表盘改 .env 后：热同步环境变量 + 重建 Router 模型列表
+        try:
+            from gateway import env_sync
+            env_sync.ensure_synced()
+        except Exception:
+            pass
+        self._ensure_channel_registry_fresh()
+
         # v2 CRITICAL FIX: 覆盖所有补全类 call_type
         # LiteLLM Proxy 对 /v1/chat/completions 传入的是 "acompletion"（异步），
         # 对 /v1/completions 传入的是 "atext_completion"（异步）。
@@ -615,30 +795,51 @@ class ComplexityRouterHook(CustomLogger):
             self._stats["non_completion_skipped"] += 1
             return data
 
-        requested_model = data.get("model", "")
+        requested_model = str(data.get("model") or "").strip()
 
-        # 显式指定内部池时仍必须执行敏感数据政策；复杂度分档只属于 auto-route。
-        if requested_model != AUTO_ROUTE:
-            if requested_model in {FAST_POOL, FREE_POOL, STRONG_POOL} or str(
-                requested_model
-            ).startswith("direct-"):
-                requirements = (
-                    self._provider_registry.request_requirements(data)
-                    if self._provider_registry is not None else {"text"}
-                )
-                sensitive_target = await self._sensitive_target(data, requirements)
-                if sensitive_target is not None:
-                    data["model"] = sensitive_target
-                    self._stats["routed_to_trusted_sensitive"] += 1
+        # ── 模式解析：智能 / 弱 / 中 / 强 ─────────────────────────
+        # 智能 → 按提问选档；固定档 → 只使用该档（敏感仍强制 trusted）
+        mode = self._resolve_client_mode(requested_model)
+        if mode is None:
+            # 直连 deployment 或其它显式模型名：不改写
             return data
 
-        target_pool = await self.decide_pool_with_classifier(data)
+        requirements = (
+            self._provider_registry.request_requirements(data)
+            if self._provider_registry is not None else {"text"}
+        )
+
+        # 所有模式：敏感内容优先
+        sensitive_target = await self._sensitive_target(data, requirements)
+        if sensitive_target is not None:
+            data["model"] = sensitive_target
+            self._stats["routed_to_trusted_sensitive"] += 1
+            logger.info(
+                "[ai-gateway-matrix] 路由决策: %s → %s (敏感, call_type=%s)",
+                requested_model, sensitive_target, call_type,
+            )
+            return data
+
+        if mode == "intelligent":
+            target_pool = await self.decide_pool_with_classifier(data)
+        else:
+            # 固定档位：仍做能力/配置解析与可用性跨档兜底
+            forced = {
+                "weak": FAST_POOL,
+                "mid": FREE_POOL,
+                "strong": STRONG_POOL,
+                "elite": ELITE_POOL,
+            }[mode]
+            target_pool = await self._resolve_pool_with_optimal(forced, requirements)
+
         data["model"] = target_pool
 
         if target_pool == TRUSTED_POOL:
             self._stats["routed_to_trusted_sensitive"] += 1
-        elif target_pool.startswith("direct-"):
-            pass  # 限时优先命中，routed_to_optimal 已经在 decide_pool_with_classifier 里计过了
+        elif str(target_pool).startswith("direct-"):
+            pass  # 限时优先命中
+        elif target_pool == ELITE_POOL:
+            self._stats["escalated_to_strong"] += 1  # 复用计数：顶级也算升档
         elif target_pool == STRONG_POOL:
             self._stats["escalated_to_strong"] += 1
         elif target_pool == FAST_POOL:
@@ -647,11 +848,225 @@ class ComplexityRouterHook(CustomLogger):
             self._stats["routed_to_free"] += 1
 
         logger.info(
-            "[ai-gateway-matrix] 路由决策: auto-route → %s (call_type=%s)",
-            target_pool, call_type,
+            "[ai-gateway-matrix] 路由决策: %s (mode=%s) → %s (call_type=%s)",
+            requested_model, mode, target_pool, call_type,
         )
 
         return data
+
+    @staticmethod
+    def _deployment_params(data: dict) -> dict:
+        nested = data.get("litellm_params")
+        return nested if isinstance(nested, dict) else data
+
+    def _extract_display_id_from_request(self, data: dict) -> Optional[str]:
+        params = self._deployment_params(data)
+        requested_model = str(params.get("model") or data.get("model") or "")
+        direct_matches = [
+            channel for channel in self._channel_registry.values()
+            if channel.get("direct_model_name") == requested_model
+        ]
+        if len(direct_matches) == 1:
+            return direct_matches[0]["display_id"]
+        return self._extract_display_id({"litellm_params": params})
+
+    async def async_pre_call_deployment_hook(
+        self, kwargs: dict, call_type: Any
+    ) -> Optional[dict]:
+        """deployment 选定后应用运行期健康熔断和模型专属参数。"""
+        self._ensure_channel_registry_fresh()
+        params = self._deployment_params(kwargs)
+        model = str(params.get("model") or kwargs.get("model") or "").lower()
+        display_id = self._extract_display_id_from_request(kwargs)
+        if display_id:
+            remaining = await quota_manager.cooldown_remaining(display_id)
+            if remaining > 0:
+                logger.info(
+                    "[ai-gateway-matrix] 跳过运行期冷却渠道 %s（剩余 %d 秒）",
+                    display_id,
+                    remaining,
+                )
+                raise RuntimeError("channel_cooldown_active")
+
+            # Gemini 2.5 Pro 当前账号明确返回 free-tier limit: 0。LiteLLM 在
+            # Router 最终回退成功时不会把中间 deployment 的失败交给自定义
+            # failure logger，因此采用“先熔断、成功再清除”的探测租约：
+            # 冷却到期只放行一次；成功回调会 mark_success，失败则保留 24h。
+            if "gemini-2.5-pro" in model:
+                await quota_manager.mark_failure(display_id, "quota_probe")
+
+        if "gemini-3.5-flash" in model:
+            # Gemini 3.5 Flash 默认会思考。中档日常任务用最小思考，且给最终答案
+            # 留出足够预算；温度低于 1 会触发官方/LiteLLM 的退化警告。
+            params["reasoning_effort"] = "minimal"
+            # 使用模型默认温度；Gemini 3+ 已把显式采样参数标为弃用。
+            params.pop("temperature", None)
+            max_tokens = params.get("max_tokens")
+            if not isinstance(max_tokens, (int, float)) or max_tokens < 512:
+                params["max_tokens"] = 512
+        return kwargs
+
+    @staticmethod
+    def _response_text(response: Any) -> str:
+        try:
+            choices = getattr(response, "choices", None) or []
+            message = getattr(choices[0], "message", None)
+            content = getattr(message, "content", None)
+            if isinstance(content, str):
+                return content
+        except Exception:
+            pass
+        return ""
+
+    @staticmethod
+    def _response_has_tool_call(response: Any) -> bool:
+        """空 content 但带工具调用是合法响应，不能误判为空答案。"""
+        try:
+            choices = getattr(response, "choices", None) or []
+            message = getattr(choices[0], "message", None)
+            return bool(
+                getattr(message, "tool_calls", None)
+                or getattr(message, "function_call", None)
+            )
+        except Exception:
+            return False
+
+    @staticmethod
+    def _last_user_text(data: dict) -> str:
+        params = ComplexityRouterHook._deployment_params(data)
+        messages = params.get("messages") or data.get("messages") or []
+        for message in reversed(messages):
+            if isinstance(message, dict) and message.get("role") == "user":
+                content = message.get("content")
+                if isinstance(content, str):
+                    return content
+        return ""
+
+    @staticmethod
+    def _quality_failure_reason(prompt: str, output: str) -> Optional[str]:
+        """识别确定性较高的模板泄漏、乱码和复读，不评价回答观点。"""
+        stripped = output.strip()
+        if not stripped:
+            return "empty_output"
+        lowered = stripped.lower()
+        role_markers = ("<|im_start|>", "<|im_end|>", "<|assistant|>", "\nuser\n", "\nassistant\n")
+        if any(marker in lowered for marker in role_markers):
+            return "chat_template_echo"
+        if "�" in stripped or any(ord(ch) < 32 and ch not in "\n\r\t" for ch in stripped):
+            return "mojibake"
+        # 只校验题面可无歧义算出的简单加减应用题，不对一般语义回答评分。
+        arithmetic = re.search(
+            r"有\s*(\d+)\s*个?.*?送出\s*(\d+)\s*个?.*?(?:又|再)?买(?:了)?\s*(\d+)\s*个?",
+            prompt,
+            re.DOTALL,
+        )
+        if arithmetic:
+            expected = int(arithmetic.group(1)) - int(arithmetic.group(2)) + int(arithmetic.group(3))
+            if not re.search(rf"(?<!\d){expected}(?!\d)", stripped):
+                return "arithmetic_mismatch"
+        # 纯数字四则表达式同样可以确定性校验。只接受数字和受限运算符，
+        # 使用 AST 白名单计算，绝不 eval 用户输入。
+        if re.search(r"(?:等于|计算|结果|多少|what\s+is|=)", prompt, re.I):
+            expression = re.search(
+                r"(?<![\w.])(\d+(?:\.\d+)?(?:\s*(?:\*\*|//|[+\-*/%])\s*\d+(?:\.\d+)?)+)",
+                prompt,
+            )
+            if expression:
+                try:
+                    tree = ast.parse(expression.group(1), mode="eval")
+
+                    def calculate(node: ast.AST) -> float:
+                        if isinstance(node, ast.Expression):
+                            return calculate(node.body)
+                        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+                            return float(node.value)
+                        if isinstance(node, ast.BinOp):
+                            left, right = calculate(node.left), calculate(node.right)
+                            if isinstance(node.op, ast.Add):
+                                return left + right
+                            if isinstance(node.op, ast.Sub):
+                                return left - right
+                            if isinstance(node.op, ast.Mult):
+                                return left * right
+                            if isinstance(node.op, ast.Div):
+                                return left / right
+                            if isinstance(node.op, ast.FloorDiv):
+                                return left // right
+                            if isinstance(node.op, ast.Mod):
+                                return left % right
+                            if isinstance(node.op, ast.Pow) and abs(right) <= 10:
+                                return left ** right
+                        raise ValueError("unsupported arithmetic expression")
+
+                    value = calculate(tree)
+                    expected_text = str(int(value)) if value.is_integer() else f"{value:.10g}"
+                    if not re.search(rf"(?<![\d.]){re.escape(expected_text)}(?![\d.])", stripped):
+                        return "arithmetic_mismatch"
+                except (ArithmeticError, SyntaxError, ValueError, OverflowError):
+                    pass
+        normalized_prompt = re.sub(r"\s+", "", prompt).lower()
+        normalized_output = re.sub(r"\s+", "", stripped).lower()
+        if len(normalized_prompt) >= 24 and normalized_prompt[:48] in normalized_output:
+            return "prompt_echo"
+        lines = [line.strip() for line in stripped.splitlines() if len(line.strip()) >= 8]
+        if lines and len(lines) >= 3 and max(lines.count(line) for line in set(lines)) >= 3:
+            return "repeated_lines"
+        return None
+
+    async def async_post_call_success_deployment_hook(
+        self, request_data: dict, response: Any, call_type: Any
+    ) -> Optional[Any]:
+        """把明显坏输出转换为 deployment 失败，让 LiteLLM 尝试同档 peer。"""
+        params = self._deployment_params(request_data)
+        # 流式响应在此阶段尚未形成完整正文，不能做内容质量判断。
+        if params.get("stream") or request_data.get("stream"):
+            return response
+        model = str(params.get("model") or "").lower()
+        api_base = str(params.get("api_base") or "").lower()
+        guarded = any(name in model for name in QUALITY_GUARDED_MODELS) and any(
+            base in api_base for base in QUALITY_GUARDED_BASES
+        )
+        output = self._response_text(response)
+        if not output.strip():
+            if self._response_has_tool_call(response):
+                return response
+            # 空正文对所有普通文本模型都无效，而不仅是已知不稳定的小模型。
+            reason = "empty_output"
+        else:
+            reason = self._quality_failure_reason(
+                self._last_user_text(request_data), output
+            )
+        if reason is None or (
+            not guarded and reason not in UNIVERSAL_QUALITY_FAILURES
+        ):
+            return response
+        if reason is None:
+            return response
+        display_id = self._extract_display_id_from_request(request_data)
+        if display_id:
+            await quota_manager.mark_failure(display_id, "quality_error")
+        logger.warning(
+            "[ai-gateway-matrix] 渠道输出质量校验失败（渠道=%s，原因=%s），切换同档 peer",
+            display_id or "unknown",
+            reason,
+        )
+        raise RuntimeError(f"response_quality_error:{reason}")
+
+    @staticmethod
+    def _resolve_client_mode(requested_model: str) -> Optional[str]:
+        """返回 intelligent|weak|mid|strong|elite；非入口模型返回 None。"""
+        name = (requested_model or "").strip()
+        if name in MODE_INTELLIGENT:
+            return "intelligent"
+        if name in MODE_WEAK:
+            return "weak"
+        if name in MODE_MID:
+            return "mid"
+        if name in MODE_STRONG:
+            return "strong"
+        if name in MODE_ELITE:
+            return "elite"
+        return None
 
     # ──────────────────────────────────────────────────────────────
     #  用量追踪（v5 新增，配合浏览器仪表盘）
@@ -665,7 +1080,7 @@ class ComplexityRouterHook(CustomLogger):
         所以用它的 model + api_base 拼出的 channel_id 跟 dashboard/backend.py
         解析 config.yaml 时生成的 id 是同一套，两边才能对得上。
         """
-        litellm_params = kwargs.get("litellm_params") or {}
+        litellm_params = self._deployment_params(kwargs)
         model = litellm_params.get("model")
         if not model:
             return None
@@ -675,17 +1090,39 @@ class ComplexityRouterHook(CustomLogger):
 
     def _extract_display_id(self, kwargs: dict) -> Optional[str]:
         """将 LiteLLM 已选中的 deployment 反查回不含密钥的稳定标识。"""
-        params = kwargs.get("litellm_params") or {}
+        # LiteLLM 的常规日志回调使用嵌套 litellm_params；部分失败路径会把
+        # deployment 参数直接放在顶层。两种形态都要支持，否则 429 无法写入冷却。
+        params = self._deployment_params(kwargs)
         model = params.get("model")
         api_base = params.get("api_base")
         if not model:
             return None
+        direct_matches = [
+            channel for channel in self._channel_registry.values()
+            if channel.get("direct_model_name") == str(model)
+        ]
+        if len(direct_matches) == 1:
+            return direct_matches[0]["display_id"]
         matches = [
             channel for channel in self._channel_registry.values()
             if channel.get("model") == model and channel.get("api_base") == api_base
         ]
         if len(matches) == 1:
             return matches[0]["display_id"]
+        # 原生 provider 可能在调用期补全真实 api_base，而注册表里是 None。
+        # 模型名唯一时仍可安全反查，保证失败能写入对应渠道的运行期熔断。
+        model_text = str(model)
+        model_matches = []
+        for channel in self._channel_registry.values():
+            registered = str(channel.get("model") or "")
+            if (
+                registered == model_text
+                or registered.endswith("/" + model_text)
+                or model_text.endswith("/" + registered)
+            ):
+                model_matches.append(channel)
+        if not matches and len(model_matches) == 1:
+            return model_matches[0]["display_id"]
         resolved_key = params.get("api_key")
         if resolved_key is not None:
             resolved_key = str(resolved_key)
@@ -717,8 +1154,26 @@ class ComplexityRouterHook(CustomLogger):
         try:
             usage = getattr(response_obj, "usage", None)
             if usage is not None:
-                prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
-                completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+                prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+                completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+            # 部分上游成功但不回 usage：用消息长度粗估，避免统计永远为 0
+            if prompt_tokens + completion_tokens <= 0:
+                messages = kwargs.get("messages") or []
+                if not messages:
+                    lp = kwargs.get("litellm_params") or {}
+                    messages = lp.get("messages") or []
+                text_len = 0
+                for m in messages:
+                    if isinstance(m, dict):
+                        c = m.get("content")
+                        if isinstance(c, str):
+                            text_len += len(c)
+                        elif isinstance(c, list):
+                            for part in c:
+                                if isinstance(part, dict) and isinstance(part.get("text"), str):
+                                    text_len += len(part["text"])
+                prompt_tokens = max(1, text_len // 4)
+                completion_tokens = max(1, 1)
             params = kwargs.get("litellm_params") or {}
             model = params.get("model", "")
             cost, cost_source = pricing.compute_cost(
@@ -763,7 +1218,25 @@ class ComplexityRouterHook(CustomLogger):
             )
         display_id = self._extract_display_id(kwargs)
         if display_id:
-            await quota_manager.mark_failure(display_id, error_class)
+            # 模型改名/不存在：短冷却即可，留给 autofix；勿按 auth 长冷冻
+            fail_class = "rate_limit" if error_class in {"unknown"} and (
+                "model" in str(error or "").lower()
+            ) else error_class
+            try:
+                from gateway.model_autofix import is_model_name_error
+                if is_model_name_error(str(error or "")):
+                    fail_class = "rate_limit"
+            except Exception:
+                pass
+            await quota_manager.mark_failure(display_id, fail_class)
+
+        # 免费模型改名自愈：异步尝试 /models + 强模型裁决 + 写 config
+        try:
+            from gateway.model_autofix import is_model_name_error, maybe_autofix_from_failure
+            if is_model_name_error(str(error or "")):
+                asyncio.create_task(maybe_autofix_from_failure(kwargs))
+        except Exception as exc:
+            logger.debug("[ai-gateway-matrix] model autofix 调度失败: %s", exc)
 
     # ──────────────────────────────────────────────────────────────
     #  失败分类 & 日志
@@ -775,7 +1248,9 @@ class ComplexityRouterHook(CustomLogger):
         返回值：
           · "router_exhausted"  所有渠道同时不可用
           · "auth_error"        鉴权失败（key 失效/填错）
+          · "quota_zero"        明确额度为 0（长熔断）
           · "quota_error"       额度/计费类错误（配额耗尽）
+          · "quality_error"     模板泄漏/乱码等确定性坏输出
           · "rate_limit"        临时限流（429）
           · "timeout"           超时
           · "unknown"           其他
@@ -784,11 +1259,53 @@ class ComplexityRouterHook(CustomLogger):
 
         if "no deployments available" in error_lower or "all deployments" in error_lower:
             return "router_exhausted"
+        if "channel_cooldown_active" in error_lower:
+            return "cooldown_active"
+        if "response_quality_error" in error_lower:
+            return "quality_error"
         if "401" in error_lower or "unauthorized" in error_lower or "invalid api key" in error_lower:
             return "auth_error"
-        if "402" in error_lower or "payment required" in error_lower or "quota" in error_lower or "billing" in error_lower:
+        # 明确的额度为 0 必须先于通用 429；否则会被误判成 8 秒临时限流。
+        quota_zero_markers = (
+            "limit: 0",
+            'limit\": 0',
+            "limit=0",
+            "quota limit 0",
+            "quota_limit=0",
+        )
+        if any(marker in error_lower for marker in quota_zero_markers):
+            return "quota_zero"
+        quota_markers = (
+            "insufficient_quota",
+            "exceeded your current quota",
+            "quota exceeded",
+            "resource_exhausted",
+            "payment required",
+            "billing",
+            "402",
+        )
+        if any(marker in error_lower for marker in quota_markers):
             return "quota_error"
-        if "429" in error_lower or "rate limit" in error_lower or "too many requests" in error_lower:
+        # 真·额度耗尽（日/月额度用完）vs 临时拥挤：中文「访问量过大」是后者
+        busy_markers = (
+            "访问量过大",
+            "稍后再试",
+            "请您稍后再试",
+            "系统繁忙",
+            "服务繁忙",
+            "overloaded",
+            "overload",
+            "capacity",
+            "high demand",
+            "too many concurrent",
+            "并发",
+            "限流",
+            "频率超限",
+            "rate limit",
+            "too many requests",
+            "429",
+        )
+        if any(m in error_lower or m in error_text for m in busy_markers):
             return "rate_limit"
         if "timeout" in error_lower or "timed out" in error_lower:
             return "timeout"
@@ -813,6 +1330,13 @@ class ComplexityRouterHook(CustomLogger):
         error_text = str(original_exception)
         error_class = self._classify_error(error_text)
 
+        # LiteLLM 的 deployment 日志回调不会覆盖所有“直连模型最终失败”路径。
+        # 在请求级失败钩子再兜底一次；direct-* 可稳定反查到真实渠道，确保
+        # 限时优先模型的 429/401 同样进入运行期冷却。
+        display_id = self._extract_display_id_from_request(request_data)
+        if display_id and error_class not in {"cooldown_active", "router_exhausted"}:
+            await quota_manager.mark_failure(display_id, error_class)
+
         # 上游错误有时会回显 URL、请求片段或鉴权信息，日志只保留
         # 异常类型和脱敏分类，不记录 str(original_exception) 原文。
         log_msg = (
@@ -832,7 +1356,7 @@ class ComplexityRouterHook(CustomLogger):
                 "这种情况【等待不会自愈】，需要去对应供应商后台检查 key 状态。",
                 log_msg,
             )
-        elif error_class == "quota_error":
+        elif error_class in {"quota_zero", "quota_error"}:
             logger.warning(
                 "%s —— 触发额度/计费类错误（疑似配额耗尽而非临时限流），"
                 "通常要等到供应商的重置周期（按日/按月）才会恢复。",
@@ -840,7 +1364,8 @@ class ComplexityRouterHook(CustomLogger):
             )
         elif error_class == "rate_limit":
             logger.info(
-                "%s —— 临时限流（429），交给 Router 的 cooldown+fallback 自动处理。",
+                "%s —— 临时拥挤/限流（如智谱「访问量过大」）。"
+                "本次换其它渠道；短冷却后仍会再试该渠道，不会一次失败就长期弃用。",
                 log_msg,
             )
         elif error_class == "timeout":

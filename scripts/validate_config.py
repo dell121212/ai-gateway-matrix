@@ -9,10 +9,12 @@ from collections import Counter
 from pathlib import Path
 import yaml
 
-from gateway import channel_ids
-from gateway.provider_registry import PRIMARY_POOLS, parse_env_ref
-
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from gateway import channel_ids  # noqa: E402 - 支持直接执行 scripts/validate_config.py
+from gateway.provider_registry import PRIMARY_POOLS, parse_env_ref  # noqa: E402
 
 
 class UniqueKeyLoader(yaml.SafeLoader):

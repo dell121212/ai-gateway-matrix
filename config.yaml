@@ -3,21 +3,14 @@
 #
 #  整合 40+ 免费/试用 LLM API 渠道，按任务复杂度自动路由，最大化免费额度利用率。
 #
-#  五个模型分组（model_name）：
-#    · auto-route         统一入口，由 gateway/custom_router_hook.py 按复杂度改写
-#    · free-pool          所有免费渠道，按 RPM + 预算自动负载均衡
-#    · fast-pool          超快推理渠道（Groq/Cerebras/SambaNova），用于简单任务
-#    · strong-model-pool  大模型渠道（Llama 405B/Gemini 2.5 Pro），用于复杂任务
-#    · trusted-pool       只含 provider_manifest.yaml 显式设置
-#                          sensitive_allowed=true 的渠道，不再由“官方直营”自动推导。
-#                          gateway/custom_router_hook.py 检测到 prompt 里疑似包含
-#                          API Key / 密码 / 内网地址 / 数据库连接串等敏感信息时，
-#                          强制走这个池子，即使命中了"升级到 strong-model-pool"
-#                          的复杂度规则也会被这条规则覆盖——隐私优先于路由性能。
-#
-#  客户端调用 model="auto-route"；
-#  gateway/custom_router_hook.py 会在请求真正发出前，根据任务内容把它改写成
-#  "fast-pool" / "free-pool" / "strong-model-pool" / "trusted-pool"。
+#  模型分组（按参数量大致能力，非绝对）：
+#    · 弱  fast-pool          0.5B–8B   分类/提取/摘要/简单问答
+#    · 中  free-pool          9B–30B    日常写作/翻译/普通编程
+#    · 强  strong-model-pool  31B–100B  复杂写作/代码分析/多条件（70B 属强）
+#    · 顶级 elite-model-pool  100B+     复杂推理/长文本/项目规划（不保证必胜优秀小模型）
+#    · auto-route / mode-intelligent  智能：强模型先判强度，再选档
+#    · mode-weak / mid / strong / elite  固定档入口
+#    · trusted-pool                   敏感内容强制官方渠道
 #
 # ════════════════════════════════════════════════════════════════
 #  渠道优先级说明（priority 字段，数字越大优先级越高）：
@@ -27,22 +20,25 @@
 #    priority: 40   兜底（试用额度，用完即止）
 #    priority: 20   最后兜底（中转站，稳定性不确定）
 #
-#  RPM（每分钟请求数）和 max_budget（每日预算美元）用于 usage-based-routing-v2
-#  的负载均衡：Router 会优先把请求分给 RPM 余量最多、预算最充足的渠道。
+#  RPM / max_budget：simple-shuffle 下仍可作为权重提示；仪表盘配额账本
+#  与 Router 内部限流是两套体系（见 README）。
 #
-#  ⚠️ 已知问题（v5 记录）：LiteLLM GitHub 上有一个 2025-10-29 提交、
-#  截至目前仍未关闭的 issue（usage-based-routing-v2 在有可用 deployment 时
-#  仍误报 "no deployments available"）。上生产前请先在真实并发下跑一遍
-#  scripts/test_gateway.py，确认这 44+ 个 deployment 不会触发同样的问题；
-#  如果频繁触发，考虑把 routing_strategy 换成 simple-shuffle。
+#  路由策略（社区共识，2025–2026）：
+#  · 官方文档：生产环境推荐 simple-shuffle（默认，延迟最低）。
+#  · GitHub #16060：usage-based-routing-v2 在仍有可用 deployment 时会
+#    误报 RateLimitError「No deployments available for selected model」
+#    （Deployments 字典里甚至还能看到 current_rpm / rpm_limit）。
+#    多位用户回退到 simple-shuffle 后恢复。issue 截至修复前仍 open。
+#  · 因此本配置使用 simple-shuffle + enable_weighted_failover：
+#    同 model_name 池内失败会换 peer deployment，而不是立刻把整池判死。
 # ════════════════════════════════════════════════════════════════
 
 model_list:
   # ════════════════════════════════════════════════════════════════
-  #  auto-route — 统一入口（安全默认值，hook 改写后不会真正使用）
+  #  统一入口 / 模式别名（占位 deployment；hook 会改写真实目标）
   # ════════════════════════════════════════════════════════════════
   - model_name: auto-route
-    litellm_params:
+    litellm_params: &auto_route_placeholder
       model: openai/glm-4.7-flash
       api_base: https://open.bigmodel.cn/api/paas/v4/
       api_key: os.environ/GLM_API_KEY
@@ -50,14 +46,32 @@ model_list:
       max_budget: 0.01
       budget_duration: 1day
 
+  - model_name: mode-intelligent
+    litellm_params:
+      <<: *auto_route_placeholder
+
+  - model_name: mode-weak
+    litellm_params:
+      <<: *auto_route_placeholder
+
+  - model_name: mode-mid
+    litellm_params:
+      <<: *auto_route_placeholder
+
+  - model_name: mode-strong
+    litellm_params:
+      <<: *auto_route_placeholder
+
+  - model_name: mode-elite
+    litellm_params:
+      <<: *auto_route_placeholder
+
   # ════════════════════════════════════════════════════════════════
-  #  fast-pool — 超快推理渠道（简单任务专用）
-  #  Groq LPU / Cerebras WSE / SambaNova RDU，速度 500-2000 tokens/sec
-  #  以下全部是官方直营（厂商自建硬件、自己运营 API），因此同时加入 trusted-pool
+  #  fast-pool — 弱档（约 0.5B–8B）：分类 / 提取 / 摘要 / 简单问答
   # ════════════════════════════════════════════════════════════════
 
-  # --- Groq: GPT-OSS 20B（LPU 超快推理）[官方直营] ---
-  - model_name: fast-pool
+  # --- Groq: GPT-OSS 20B（约 20B → 中档 free-pool）[官方直营] ---
+  - model_name: free-pool
     litellm_params: &groq_llama33_70b
       model: groq/openai/gpt-oss-20b
       api_key: os.environ/GROQ_API_KEY
@@ -68,7 +82,7 @@ model_list:
       max_input_tokens: 120000
 
   # --- Groq: Qwen 3.6 27B（多模态 + 超长上下文）[官方直营] ---
-  - model_name: fast-pool
+  - model_name: free-pool
     litellm_params: &groq_llama4_scout
       model: groq/qwen/qwen3.6-27b
       api_key: os.environ/GROQ_API_KEY
@@ -78,26 +92,22 @@ model_list:
       priority: 95
       max_input_tokens: 130000
 
-  # --- Cerebras: GPT-OSS 120B（WSE 超快推理）[官方直营] ---
-  - model_name: fast-pool
+  # --- Cerebras: GPT-OSS 120B（官网仍有低限额 Free；本账号实测要求付费，优先级压后）---
+  - model_name: elite-model-pool
     litellm_params: &cerebras_8b
       model: cerebras/gpt-oss-120b
       api_key: os.environ/CEREBRAS_API_KEY
       rpm: 30
-      max_budget: 0.01
-      budget_duration: 1day
-      priority: 90
+      priority: 0
       max_input_tokens: 120000
 
-  # --- Cerebras: Z.ai GLM 4.7（预览模型，低 RPD）[官方直营] ---
-  - model_name: fast-pool
+  # --- Cerebras: Z.ai GLM 4.7（旗舰级；账号可用性依控制台，列表靠后）---
+  - model_name: elite-model-pool
     litellm_params: &cerebras_70b
       model: cerebras/zai-glm-4.7
       api_key: os.environ/CEREBRAS_API_KEY
       rpm: 10
-      max_budget: 0.01
-      budget_duration: 1day
-      priority: 85
+      priority: 35
       max_input_tokens: 120000
 
   # --- SambaNova: Llama 3.1 8B (RDU 快速推理) [官方直营] ---
@@ -111,9 +121,56 @@ model_list:
       priority: 80
       max_input_tokens: 120000
 
+  # --- SiliconFlow: Qwen 2.5 7B（可重置免费 · 弱档 · 硅基优先用这个）---
+  - model_name: fast-pool
+    litellm_params: &siliconflow_qwen_7b
+      model: openai/Qwen/Qwen2.5-7B-Instruct
+      api_base: https://api.siliconflow.cn/v1
+      api_key: os.environ/SILICONFLOW_API_KEY
+      rpm: 100
+      max_budget: 0.01
+      budget_duration: 1day
+      priority: 92
+      max_input_tokens: 30000
+
+  # --- 魔搭 ModelScope：日 2000 次可重置 ---
+  # 目录实测：旧 Qwen2.5 已下线，Qwen3-8B → 弱档；Qwen3-14B → 中档。
+  - model_name: fast-pool
+    litellm_params: &modelscope_qwen
+      model: openai/Qwen/Qwen3-8B
+      api_base: https://api-inference.modelscope.cn/v1
+      api_key: os.environ/MODELSCOPE_API_KEY
+      rpm: 30
+      max_budget: 0.01
+      budget_duration: 1day
+      priority: 88
+      max_input_tokens: 30000
+
+  - model_name: free-pool
+    litellm_params: &modelscope_qwen_mid
+      model: openai/Qwen/Qwen3-14B
+      api_base: https://api-inference.modelscope.cn/v1
+      api_key: os.environ/MODELSCOPE_API_KEY
+      rpm: 20
+      max_budget: 0.01
+      budget_duration: 1day
+      priority: 0
+      max_input_tokens: 30000
+
+  # --- SiliconFlow: GLM-4-9B-0414（一次性免费额度 · 中档 · 排后）---
+  - model_name: free-pool
+    litellm_params: &siliconflow_glm_9b
+      model: openai/THUDM/GLM-4-9B-0414
+      api_base: https://api.siliconflow.cn/v1
+      api_key: os.environ/SILICONFLOW_API_KEY
+      rpm: 100
+      max_budget: 0.01
+      budget_duration: 1day
+      priority: 35
+      max_input_tokens: 30000
+
   # ════════════════════════════════════════════════════════════════
-  #  free-pool — 通用免费渠道池（中等复杂度任务）
-  #  Google Gemini / GLM / SiliconFlow / Mistral / OpenRouter
+  #  free-pool — 中档（约 9B–30B）：日常写作/翻译/普通编程
   # ════════════════════════════════════════════════════════════════
 
   # --- Google Gemini 3.5 Flash (免费层, 1M 上下文) [官方直营] ---
@@ -125,17 +182,6 @@ model_list:
       max_budget: 0.01
       budget_duration: 1day
       priority: 100
-      max_input_tokens: 900000
-
-  # --- Google Gemini 2.5 Flash (免费层, 更强推理) [官方直营] ---
-  - model_name: free-pool
-    litellm_params: &gemini_25_flash
-      model: gemini/gemini-2.5-flash
-      api_key: os.environ/GEMINI_API_KEY
-      rpm: 15
-      max_budget: 0.01
-      budget_duration: 1day
-      priority: 95
       max_input_tokens: 900000
 
   # --- GLM-4.7-Flash (智谱, 完全免费, 200K 上下文) [官方直营] ---
@@ -154,43 +200,30 @@ model_list:
       priority: 90
       max_input_tokens: 200000
 
-  # --- SiliconFlow: Qwen 2.5 7B (硅基流动免费层，第三方托管，非原厂直营) ---
-  - model_name: free-pool
-    litellm_params:
-      model: openai/Qwen/Qwen2.5-7B-Instruct
-      api_base: https://api.siliconflow.cn/v1
-      api_key: os.environ/SILICONFLOW_API_KEY
-      rpm: 100
-      max_budget: 0.01
-      budget_duration: 1day
-      priority: 85
-      max_input_tokens: 30000
-
-  # --- SiliconFlow: DeepSeek-V3 (硅基流动免费层，第三方托管，非原厂直营) ---
-  - model_name: free-pool
-    litellm_params:
+  # --- SiliconFlow: DeepSeek-V3（一次性免费额度 · 顶级 · 路由优先级靠后）---
+  - model_name: elite-model-pool
+    litellm_params: &siliconflow_deepseek_v3
       model: openai/deepseek-ai/DeepSeek-V3
       api_base: https://api.siliconflow.cn/v1
       api_key: os.environ/SILICONFLOW_API_KEY
       rpm: 100
       max_budget: 0.01
       budget_duration: 1day
-      priority: 80
+      priority: 0
       max_input_tokens: 60000
 
-  # --- SiliconFlow: GLM-4-9B (硅基流动免费层，第三方托管，非原厂直营) ---
-  - model_name: free-pool
-    litellm_params:
-      model: openai/ZhipuAI/glm-4-9b-chat
-      api_base: https://api.siliconflow.cn/v1
-      api_key: os.environ/SILICONFLOW_API_KEY
-      rpm: 100
+  # --- Mistral 官方 La Plateforme（实验档可限流访问多档模型）---
+  # 弱：Ministral 8B · 中：Small ~22–24B · 强：Medium · 顶级：Large 3（~675B MoE）
+  - model_name: fast-pool
+    litellm_params: &mistral_ministral_8b
+      model: mistral/ministral-8b-latest
+      api_key: os.environ/MISTRAL_KEY_1
+      rpm: 15
       max_budget: 0.01
       budget_duration: 1day
       priority: 75
-      max_input_tokens: 30000
+      max_input_tokens: 128000
 
-  # --- Mistral Small (La Plateforme 免费层) [官方直营] ---
   - model_name: free-pool
     litellm_params: &mistral_small_1
       model: mistral/mistral-small-latest
@@ -199,12 +232,29 @@ model_list:
       max_budget: 0.01
       budget_duration: 1day
       priority: 70
-      max_input_tokens: 30000
+      max_input_tokens: 128000
 
-  # --- Mistral Small (第二个账号, 轮换用) [官方直营]
-  # ⚠️ 合规提醒：用第二个账号叠加免费额度，多数厂商 ToS 明确禁止
-  # "创建多个账号规避速率限制"，Mistral 的服务条款大概率也不例外。
-  # 上生产前请自行确认，别把个人白嫖习惯直接搬进有真实负载的项目里。
+  - model_name: strong-model-pool
+    litellm_params: &mistral_medium_1
+      model: mistral/mistral-medium-latest
+      api_key: os.environ/MISTRAL_KEY_1
+      rpm: 10
+      max_budget: 0.01
+      budget_duration: 1day
+      priority: 72
+      max_input_tokens: 128000
+
+  - model_name: elite-model-pool
+    litellm_params: &mistral_large_1
+      model: mistral/mistral-large-latest
+      api_key: os.environ/MISTRAL_KEY_1
+      rpm: 8
+      max_budget: 0.01
+      budget_duration: 1day
+      priority: 88
+      max_input_tokens: 128000
+
+  # 第二账号：默认只挂 Small 轮换（叠加额度可能违 ToS，个人实验自担）
   - model_name: free-pool
     litellm_params: &mistral_small_2
       model: mistral/mistral-small-latest
@@ -212,11 +262,11 @@ model_list:
       rpm: 10
       max_budget: 0.01
       budget_duration: 1day
-      priority: 70
-      max_input_tokens: 30000
+      priority: 68
+      max_input_tokens: 128000
 
   # --- OpenRouter: Llama 3.3 70B (免费模型，聚合平台) ---
-  - model_name: free-pool
+  - model_name: strong-model-pool
     litellm_params:
       model: openrouter/meta-llama/llama-3.3-70b-instruct:free
       api_key: os.environ/OPENROUTER_API_KEY
@@ -226,10 +276,10 @@ model_list:
       priority: 60
       max_input_tokens: 120000
 
-  # --- OpenRouter: Mistral Nemo (免费模型，聚合平台) ---
+  # --- OpenRouter: Nemotron Nano 30B (免费模型，聚合平台) ---
   - model_name: free-pool
     litellm_params:
-      model: openrouter/mistralai/mistral-nemo:free
+      model: openrouter/nvidia/nemotron-3-nano-30b-a3b:free
       api_key: os.environ/OPENROUTER_API_KEY
       rpm: 20
       max_budget: 0.01
@@ -237,10 +287,10 @@ model_list:
       priority: 55
       max_input_tokens: 120000
 
-  # --- OpenRouter: Gemma 2 9B (免费模型，聚合平台) ---
+  # --- OpenRouter: Gemma 4 26B (免费模型，聚合平台) ---
   - model_name: free-pool
     litellm_params:
-      model: openrouter/google/gemma-2-9b-it:free
+      model: openrouter/google/gemma-4-26b-a4b-it:free
       api_key: os.environ/OPENROUTER_API_KEY
       rpm: 20
       max_budget: 0.01
@@ -249,10 +299,11 @@ model_list:
       max_input_tokens: 8000
 
   # --- GitHub Models: GPT-4o mini (免费原型，微软代理) ---
-  - model_name: free-pool
+  - model_name: fast-pool
     litellm_params:
-      model: openai/gpt-4o-mini
-      api_base: https://models.inference.ai.azure.com
+      # 第一个 openai/ 是 LiteLLM provider，第二个是 GitHub catalog publisher。
+      model: openai/openai/gpt-4o-mini
+      api_base: https://models.github.ai/inference
       api_key: os.environ/GITHUB_TOKEN
       rpm: 15
       max_budget: 0.01
@@ -261,7 +312,7 @@ model_list:
       max_input_tokens: 8000
 
   # --- HuggingFace: Qwen 2.5 7B (免费推理，社区托管) ---
-  - model_name: free-pool
+  - model_name: fast-pool
     litellm_params:
       model: huggingface/Qwen/Qwen2.5-7B-Instruct
       api_key: os.environ/HF_TOKEN
@@ -272,41 +323,45 @@ model_list:
       max_input_tokens: 30000
 
   # ════════════════════════════════════════════════════════════════
-  #  strong-model-pool — 大模型渠道（复杂任务专用）
+  #  strong-model-pool — 强档（约 31B–100B）：复杂写作 / 代码分析 / 多条件
+  #  elite-model-pool  — 顶级（约 100B+）：复杂推理 / 长文本 / 项目规划
   #  SambaNova 405B / Gemini 2.5 Pro / DeepSeek R1
   # ════════════════════════════════════════════════════════════════
 
   # --- General Compute（已充值，按量付费）---
-  # 官方 API 为 OpenAI-compatible；这里使用官方默认模型作为初始值。
-  # 实际模型名称由用户在仪表盘卡片中按账户当前可用模型自行填写。
-  - model_name: strong-model-pool
+  # MiniMax M2.7：公开资料约 230B 总参 / ~10B 激活（MoE）→ 按总参归顶级
+  # 实际模型名可在仪表盘按账户可用列表修改。
+  - model_name: elite-model-pool
     litellm_params: &generalcompute_paid
-      model: openai/gpt-oss-120b
+      # openai/ 前缀：OpenAI-compatible 自定义 api_base（LiteLLM 要求 provider 前缀，
+      # 裸名 minimax-m2.7 会报 LLM Provider NOT provided 并被 Router 丢弃）
+      model: openai/minimax-m2.7
       api_base: https://api.generalcompute.com/v1
       api_key: os.environ/GENERALCOMPUTE_API_KEY
-      priority: 95
+      rpm: 60
+      priority: 55
       max_input_tokens: 128000
 
-  # --- SambaNova: Llama 3.1 405B (唯一免费的 405B 模型) [官方直营] ---
-  - model_name: strong-model-pool
+  # --- SambaNova: Llama 3.1 405B（旧型号，当前目录已下线，保留记录但巡检会屏蔽）---
+  - model_name: elite-model-pool
     litellm_params: &sambanova_405b
       model: sambanova/Meta-Llama-3.1-405B-Instruct
       api_key: os.environ/SAMBANOVA_API_KEY
       rpm: 10
       max_budget: 0.01
       budget_duration: 1day
-      priority: 100
+      priority: 0
       max_input_tokens: 120000
 
-  # --- SambaNova: Llama 3.1 70B [官方直营] ---
+  # --- SambaNova: Llama 3.3 70B（$5/30天试用）[官方直营] ---
   - model_name: strong-model-pool
     litellm_params: &sambanova_70b
-      model: sambanova/Meta-Llama-3.1-70B-Instruct
+      model: sambanova/Meta-Llama-3.3-70B-Instruct
       api_key: os.environ/SAMBANOVA_API_KEY
       rpm: 20
       max_budget: 0.01
       budget_duration: 1day
-      priority: 90
+      priority: 0
       max_input_tokens: 120000
 
   # --- Google Gemini 2.5 Pro (免费层, 最强推理) [官方直营] ---
@@ -321,48 +376,48 @@ model_list:
       max_input_tokens: 900000
 
   # --- Groq: GPT-OSS 120B（强推理）[官方直营] ---
-  - model_name: strong-model-pool
+  - model_name: elite-model-pool
     litellm_params: &groq_kimi_k2
       model: groq/openai/gpt-oss-120b
       api_key: os.environ/GROQ_API_KEY
       rpm: 30
       max_budget: 0.01
       budget_duration: 1day
-      priority: 80
+      priority: 0
       max_input_tokens: 120000
 
-  # --- SiliconFlow: DeepSeek-R1 (免费层, 推理模型，第三方托管) ---
-  - model_name: strong-model-pool
-    litellm_params:
+  # --- SiliconFlow: DeepSeek-R1（一次性免费额度 · 顶级 · 靠后）---
+  - model_name: elite-model-pool
+    litellm_params: &siliconflow_deepseek_r1
       model: openai/deepseek-ai/DeepSeek-R1
       api_base: https://api.siliconflow.cn/v1
       api_key: os.environ/SILICONFLOW_API_KEY
       rpm: 50
       max_budget: 0.01
       budget_duration: 1day
-      priority: 75
+      priority: 0
       max_input_tokens: 60000
 
   # --- OpenRouter: DeepSeek R1 (免费模型，聚合平台) ---
-  - model_name: strong-model-pool
+  - model_name: elite-model-pool
     litellm_params:
-      model: openrouter/deepseek/deepseek-r1:free
+      model: openrouter/nvidia/nemotron-3-ultra-550b-a55b:free
       api_key: os.environ/OPENROUTER_API_KEY
       rpm: 10
       max_budget: 0.01
       budget_duration: 1day
-      priority: 70
+      priority: 90
       max_input_tokens: 60000
 
   # --- DeepSeek 官方 API (试用额度, 极便宜) [官方直营] ---
-  - model_name: strong-model-pool
+  - model_name: elite-model-pool
     litellm_params: &deepseek_official
       model: deepseek/deepseek-reasoner
       api_key: os.environ/DEEPSEEK_API_KEY
       rpm: 10
       max_budget: 0.01
       budget_duration: 1day
-      priority: 60
+      priority: 0
       max_input_tokens: 60000
 
   # --- Together AI: Llama 3.3 70B (试用额度，第三方推理托管) ---
@@ -373,7 +428,7 @@ model_list:
       rpm: 10
       max_budget: 0.01
       budget_duration: 1day
-      priority: 50
+      priority: 0
       max_input_tokens: 120000
 
   # ════════════════════════════════════════════════════════════════
@@ -382,33 +437,25 @@ model_list:
 
   # ─── Agnes AI（观察期渠道，请知情后使用，勿用于敏感任务）──────
   # 平台: https://platform.agnes-ai.com/  API Base: https://apihub.agnes-ai.com/v1
-  # 背景公司 Sapiens AI，2026年6月上线，"永久免费/无Token上限"是自我宣传。
-  # 调研中发现的风险信号：
-  #   · 上线不到一个月，缺乏独立第三方审计/口碑积累
-  #   · "Claw-Eval" 排行榜是其自建/关联的评测站（非 LMSYS Arena 这类独立评测），
-  #     却用它证明自己"进入全球 AI 实验室前十"
-  #   · 社交媒体上的推广话术高度模板化，符合"先圈用户免费流量再说"的典型模式
+  # 背景公司 Sapiens AI，2026年6月上线；观察期，评测/条款需自核。
   #
-  # 你的决定（已知情，尊重）：这个渠道每分钟 20 次请求、且官方宣称不设总量
-  # 上限，额度确实很香，愿意承担"它可能随时跑路/条款突变"的风险来换取这份
-  # 额度——所以这里没有像我最初建议的那样把优先级压到最低，而是给了一个
-  # "认真用起来，但依然低于所有官方直营渠道"的优先级（60）。
-  # 安全底线没有松动：
-  #   · 依然没有加入 trusted-pool —— gateway/custom_router_hook.py 检测到 prompt 
-  #     里疑似含 API Key/密码/内网地址等敏感信息时，永远不会分给它
-  #   · 依然没有加入 strong-model-pool —— 复杂任务（重构/架构/安全审计等）
-  #     命中关键词会优先升级到有官方背书的大模型渠道，不会因为普通的
-  #     "复杂度高"就把内容送到这个观察期渠道
-  #   · 如果你后续想让它也承担 strong-model-pool 的复杂任务，可以照着
-  #     下面 strong-model-pool 里其他条目的格式手动加一份，但请再想一遍：
-  #     值不值得让"可能随时下线的新渠道"去处理你最复杂/最可能带敏感信息
-  #     的那部分请求。
+  # 免费额度（以官方 Effective RPM 为准，勿只看 Allowed RPM）：
+  #   · 文本 agnes-2.0-flash：Allowed 常见 30，Effective 实际 20 RPM
+  #   · 图片 1K=20 / 2K=10 / 3K=1 / 4K=1 张/分钟；视频 1 次/分钟
+  #   · 公开文档未标日/周/月调用总量，现行主要靠每分钟频率限制
+  #     （不是「每天送固定 Token 包」）
+  # 网关 litellm rpm 按文本 Effective=20 写入。
+  #
+  # 安全底线：
+  #   · 不进 trusted-pool —— 疑似敏感内容永不路由到此
+  #   · 不进 strong-model-pool —— 复杂任务走有官方背书渠道
+  #   · 优先级 60：可用但低于多数官方直营
   - model_name: free-pool
     litellm_params:
-      model: openai/Agnes-2.0-Flash
+      model: openai/agnes-2.0-flash
       api_base: https://apihub.agnes-ai.com/v1
       api_key: os.environ/AGNES_API_KEY
-      rpm: 20
+      rpm: 20   # Effective RPM（文本）；Allowed 表可能显示 30
       max_budget: 0.01
       budget_duration: 1day
       priority: 60
@@ -442,15 +489,15 @@ model_list:
       priority: 60
       max_input_tokens: 120000
 
-  # --- DeepInfra: Llama 3.3 70B (免费层) ---
+  # --- DeepInfra: Llama 3.3 70B Turbo（按量付费，需正余额）---
   - model_name: strong-model-pool
     litellm_params:
-      model: deepinfra/meta-llama/Llama-3.3-70B-Instruct
+      model: deepinfra/meta-llama/Llama-3.3-70B-Instruct-Turbo
       api_key: os.environ/DEEPINFRA_API_KEY
       rpm: 30
       max_budget: 0.01
       budget_duration: 1day
-      priority: 55
+      priority: 0
       max_input_tokens: 120000
 
   # --- Novita AI: Llama 3.3 70B (免费试用) ---
@@ -492,8 +539,8 @@ model_list:
   #  国内官方免费层（v4 新增，均为厂商官方直营 → 加入 trusted-pool）
   # ════════════════════════════════════════════════════════════════
 
-  # --- 阿里云百炼: Qwen Plus (免费额度 100万 tokens/月) [官方直营] ---
-  - model_name: free-pool
+  # --- 阿里云百炼: Qwen Plus（新人一次性额度，之后按量）[官方直营] ---
+  - model_name: strong-model-pool
     litellm_params: &dashscope_qwen_plus
       model: openai/qwen-plus
       api_base: https://dashscope.aliyuncs.com/compatible-mode/v1
@@ -501,7 +548,7 @@ model_list:
       rpm: 60
       max_budget: 0.01
       budget_duration: 1day
-      priority: 75
+      priority: 90
       max_input_tokens: 120000
 
   # --- 阿里云百炼: Qwen Turbo (免费额度) [官方直营] ---
@@ -519,25 +566,26 @@ model_list:
   # --- 腾讯混元: hunyuan-turbos (免费 100万 tokens) [官方直营] ---
   - model_name: free-pool
     litellm_params: &hunyuan_turbos
-      model: openai/hunyuan-turbos-latest
+      model: openai/hy3
       api_base: https://api.hunyuan.cloud.tencent.com/v1
       api_key: os.environ/HUNYUAN_API_KEY
       rpm: 30
       max_budget: 0.01
       budget_duration: 1day
-      priority: 65
+      priority: 0
       max_input_tokens: 28000
 
-  # --- 百度千帆: ERNIE Speed (免费层) [官方直营] ---
-  - model_name: free-pool
+  # --- 百度千帆: ERNIE 4.5 Turbo 32K [官方直营] ---
+  # 旧 ernie-speed-128k 已不在当前账号模型目录；Turbo 按能力归强档。
+  - model_name: strong-model-pool
     litellm_params: &qianfan_ernie_speed
-      model: openai/ernie-speed-128k
+      model: openai/ernie-4.5-turbo-32k
       api_base: https://qianfan.baidubce.com/v2
       api_key: os.environ/QIANFAN_API_KEY
       rpm: 30
       max_budget: 0.01
       budget_duration: 1day
-      priority: 60
+      priority: 0
       max_input_tokens: 120000
 
   # --- 月之暗面 Kimi (免费试用额度) [官方直营] ---
@@ -557,7 +605,7 @@ model_list:
   # ════════════════════════════════════════════════════════════════
 
   # --- AIHubMix: 27+ 免费模型聚合 (OpenAI 兼容) ---
-  - model_name: free-pool
+  - model_name: fast-pool
     litellm_params:
       model: openai/gpt-4o-mini
       api_base: https://aihubmix.com/v1
@@ -569,7 +617,7 @@ model_list:
       max_input_tokens: 120000
 
   # --- Vercel AI Gateway: 多供应商聚合 ($5/月免费额度) ---
-  - model_name: free-pool
+  - model_name: fast-pool
     litellm_params:
       model: openai/gpt-4o-mini
       api_base: https://ai-gateway.vercel.sh/v1
@@ -581,7 +629,7 @@ model_list:
       max_input_tokens: 120000
 
   # --- Glama: 多供应商聚合 (免费层) ---
-  - model_name: free-pool
+  - model_name: fast-pool
     litellm_params:
       model: openai/gpt-4o-mini
       api_base: https://glama.ai/api/gateway/openai/v1
@@ -593,9 +641,9 @@ model_list:
       max_input_tokens: 120000
 
   # --- AI/ML API: 多模型聚合 (免费试用) ---
-  - model_name: free-pool
+  - model_name: fast-pool
     litellm_params:
-      model: openai/gpt-4o-mini
+      model: openai/openai/gpt-4o-mini
       api_base: https://api.aimlapi.com/v1
       api_key: os.environ/AIMLAPI_API_KEY
       rpm: 20
@@ -666,44 +714,28 @@ model_list:
     litellm_params: *sambanova_8b
   - model_name: direct-8437d0b918  # gemini/gemini-3.5-flash
     litellm_params: *gemini_20_flash
-  - model_name: direct-1ebde9e8d7  # gemini/gemini-2.5-flash
-    litellm_params: *gemini_25_flash
   - model_name: direct-017584c25b  # openai/glm-4.7-flash @ https://open.bigmodel.cn/api/paas/v4/
     litellm_params: *glm_47_flash
-  - model_name: direct-157b7cfbd7  # openai/Qwen/Qwen2.5-7B-Instruct @ https://api.siliconflow.cn/v1
-    litellm_params:
-      model: openai/Qwen/Qwen2.5-7B-Instruct
-      api_base: https://api.siliconflow.cn/v1
-      api_key: os.environ/SILICONFLOW_API_KEY
-      rpm: 100
-      max_budget: 0.01
-      budget_duration: 1day
-      priority: 85
-      max_input_tokens: 30000
-  - model_name: direct-ab2bdf0339  # openai/deepseek-ai/DeepSeek-V3 @ https://api.siliconflow.cn/v1
-    litellm_params:
-      model: openai/deepseek-ai/DeepSeek-V3
-      api_base: https://api.siliconflow.cn/v1
-      api_key: os.environ/SILICONFLOW_API_KEY
-      rpm: 100
-      max_budget: 0.01
-      budget_duration: 1day
-      priority: 80
-      max_input_tokens: 60000
-  - model_name: direct-e469c20533  # openai/ZhipuAI/glm-4-9b-chat @ https://api.siliconflow.cn/v1
-    litellm_params:
-      model: openai/ZhipuAI/glm-4-9b-chat
-      api_base: https://api.siliconflow.cn/v1
-      api_key: os.environ/SILICONFLOW_API_KEY
-      rpm: 100
-      max_budget: 0.01
-      budget_duration: 1day
-      priority: 75
-      max_input_tokens: 30000
+  - model_name: direct-2acc14905d  # modelscope Qwen3-8B
+    litellm_params: *modelscope_qwen
+  - model_name: direct-9cdacb5850  # modelscope Qwen3-14B
+    litellm_params: *modelscope_qwen_mid
+  - model_name: direct-157b7cfbd7  # openai/Qwen/Qwen2.5-7B-Instruct @ https://api.siliconflow.cn/v1（弱档）
+    litellm_params: *siliconflow_qwen_7b
+  - model_name: direct-ab2bdf0339  # openai/deepseek-ai/DeepSeek-V3 @ https://api.siliconflow.cn/v1（中档）
+    litellm_params: *siliconflow_deepseek_v3
+  - model_name: direct-04e6f06a35  # openai/THUDM/GLM-4-9B-0414 @ https://api.siliconflow.cn/v1（中档）
+    litellm_params: *siliconflow_glm_9b
   - model_name: direct-7dc9c031f6  # mistral/mistral-small-latest
     litellm_params: *mistral_small_1
   - model_name: direct-5157cfcf30  # mistral/mistral-small-latest
     litellm_params: *mistral_small_2
+  - model_name: direct-2b317aaa82  # mistral/ministral-8b-latest（弱）
+    litellm_params: *mistral_ministral_8b
+  - model_name: direct-69404f2b73  # mistral/mistral-medium-latest（强）
+    litellm_params: *mistral_medium_1
+  - model_name: direct-0cf2b46918  # mistral/mistral-large-latest（顶级）
+    litellm_params: *mistral_large_1
   - model_name: direct-2575d65830  # openrouter/meta-llama/llama-3.3-70b-instruct:free
     litellm_params:
       model: openrouter/meta-llama/llama-3.3-70b-instruct:free
@@ -713,28 +745,28 @@ model_list:
       budget_duration: 1day
       priority: 60
       max_input_tokens: 120000
-  - model_name: direct-650d74c4eb  # openrouter/mistralai/mistral-nemo:free
+  - model_name: direct-b8b058422e  # openrouter/nvidia/nemotron-3-nano-30b-a3b:free
     litellm_params:
-      model: openrouter/mistralai/mistral-nemo:free
+      model: openrouter/nvidia/nemotron-3-nano-30b-a3b:free
       api_key: os.environ/OPENROUTER_API_KEY
       rpm: 20
       max_budget: 0.01
       budget_duration: 1day
       priority: 55
       max_input_tokens: 120000
-  - model_name: direct-c79f7122c9  # openrouter/google/gemma-2-9b-it:free
+  - model_name: direct-64dab57b73  # openrouter/google/gemma-4-26b-a4b-it:free
     litellm_params:
-      model: openrouter/google/gemma-2-9b-it:free
+      model: openrouter/google/gemma-4-26b-a4b-it:free
       api_key: os.environ/OPENROUTER_API_KEY
       rpm: 20
       max_budget: 0.01
       budget_duration: 1day
       priority: 50
       max_input_tokens: 8000
-  - model_name: direct-ef00d6248b  # openai/gpt-4o-mini @ https://models.inference.ai.azure.com
+  - model_name: direct-1fb28bd089  # openai/openai/gpt-4o-mini @ https://models.github.ai/inference
     litellm_params:
-      model: openai/gpt-4o-mini
-      api_base: https://models.inference.ai.azure.com
+      model: openai/openai/gpt-4o-mini
+      api_base: https://models.github.ai/inference
       api_key: os.environ/GITHUB_TOKEN
       rpm: 15
       max_budget: 0.01
@@ -752,32 +784,24 @@ model_list:
       max_input_tokens: 30000
   - model_name: direct-3972c49a06  # sambanova/Meta-Llama-3.1-405B-Instruct
     litellm_params: *sambanova_405b
-  - model_name: direct-95240ff79e  # sambanova/Meta-Llama-3.1-70B-Instruct
+  - model_name: direct-b8cfce5500  # sambanova/Meta-Llama-3.3-70B-Instruct
     litellm_params: *sambanova_70b
   - model_name: direct-afc9e6245f  # gemini/gemini-2.5-pro
     litellm_params: *gemini_25_pro
-  - model_name: direct-93896b99f3  # openai/gpt-oss-120b @ https://api.generalcompute.com/v1
+  - model_name: direct-734917effc  # openai/minimax-m2.7 @ https://api.generalcompute.com/v1
     litellm_params: *generalcompute_paid
   - model_name: direct-695045bbeb  # groq/openai/gpt-oss-120b
     litellm_params: *groq_kimi_k2
-  - model_name: direct-4d1c80d3b5  # openai/deepseek-ai/DeepSeek-R1 @ https://api.siliconflow.cn/v1
+  - model_name: direct-4d1c80d3b5  # openai/deepseek-ai/DeepSeek-R1 @ https://api.siliconflow.cn/v1（一次性免费）
+    litellm_params: *siliconflow_deepseek_r1
+  - model_name: direct-3f01531cd1  # openrouter/nvidia/nemotron-3-ultra-550b-a55b:free
     litellm_params:
-      model: openai/deepseek-ai/DeepSeek-R1
-      api_base: https://api.siliconflow.cn/v1
-      api_key: os.environ/SILICONFLOW_API_KEY
-      rpm: 50
-      max_budget: 0.01
-      budget_duration: 1day
-      priority: 75
-      max_input_tokens: 60000
-  - model_name: direct-d34d136c93  # openrouter/deepseek/deepseek-r1:free
-    litellm_params:
-      model: openrouter/deepseek/deepseek-r1:free
+      model: openrouter/nvidia/nemotron-3-ultra-550b-a55b:free
       api_key: os.environ/OPENROUTER_API_KEY
       rpm: 10
       max_budget: 0.01
       budget_duration: 1day
-      priority: 70
+      priority: 90
       max_input_tokens: 60000
   - model_name: direct-26ed2b2272  # deepseek/deepseek-reasoner
     litellm_params: *deepseek_official
@@ -788,11 +812,11 @@ model_list:
       rpm: 10
       max_budget: 0.01
       budget_duration: 1day
-      priority: 50
+      priority: 0
       max_input_tokens: 120000
-  - model_name: direct-c7157404fc  # openai/Agnes-2.0-Flash @ https://apihub.agnes-ai.com/v1
+  - model_name: direct-4d108df7b6  # openai/agnes-2.0-flash @ https://apihub.agnes-ai.com/v1
     litellm_params:
-      model: openai/Agnes-2.0-Flash
+      model: openai/agnes-2.0-flash
       api_base: https://apihub.agnes-ai.com/v1
       api_key: os.environ/AGNES_API_KEY
       rpm: 20
@@ -820,14 +844,14 @@ model_list:
       budget_duration: 1day
       priority: 60
       max_input_tokens: 120000
-  - model_name: direct-c607604a8d  # deepinfra/meta-llama/Llama-3.3-70B-Instruct
+  - model_name: direct-33c61549db  # deepinfra/meta-llama/Llama-3.3-70B-Instruct-Turbo
     litellm_params:
-      model: deepinfra/meta-llama/Llama-3.3-70B-Instruct
+      model: deepinfra/meta-llama/Llama-3.3-70B-Instruct-Turbo
       api_key: os.environ/DEEPINFRA_API_KEY
       rpm: 30
       max_budget: 0.01
       budget_duration: 1day
-      priority: 55
+      priority: 0
       max_input_tokens: 120000
   - model_name: direct-ee17ccb98e  # openai/meta-llama/llama-3.3-70b-instruct @ https://api.novita.ai/v3/openai
     litellm_params:
@@ -862,9 +886,9 @@ model_list:
     litellm_params: *dashscope_qwen_plus
   - model_name: direct-481d70f6b7  # openai/qwen-turbo @ https://dashscope.aliyuncs.com/compatible-mode/v1
     litellm_params: *dashscope_qwen_turbo
-  - model_name: direct-b3d733504b  # openai/hunyuan-turbos-latest @ https://api.hunyuan.cloud.tencent.com/v1
+  - model_name: direct-c5d66a4541  # openai/hy3 @ https://api.hunyuan.cloud.tencent.com/v1
     litellm_params: *hunyuan_turbos
-  - model_name: direct-e8d2eefc3b  # openai/ernie-speed-128k @ https://qianfan.baidubce.com/v2
+  - model_name: direct-a8685cf0fe  # openai/ernie-4.5-turbo-32k @ https://qianfan.baidubce.com/v2
     litellm_params: *qianfan_ernie_speed
   - model_name: direct-cd466a903c  # openai/moonshot-v1-8k @ https://api.moonshot.cn/v1
     litellm_params: *moonshot_kimi
@@ -898,9 +922,9 @@ model_list:
       budget_duration: 1day
       priority: 20
       max_input_tokens: 120000
-  - model_name: direct-1e7127bf1e  # openai/gpt-4o-mini @ https://api.aimlapi.com/v1
+  - model_name: direct-deeec0582d  # openai/openai/gpt-4o-mini @ https://api.aimlapi.com/v1
     litellm_params:
-      model: openai/gpt-4o-mini
+      model: openai/openai/gpt-4o-mini
       api_base: https://api.aimlapi.com/v1
       api_key: os.environ/AIMLAPI_API_KEY
       rpm: 20
@@ -913,12 +937,35 @@ model_list:
 #  Router 设置
 # ════════════════════════════════════════════════════════════════
 router_settings:
-  routing_strategy: usage-based-routing-v2
-  num_retries: 3
-  cooldown_time: 60
-  enable_pre_call_checks: true
-  retry_after: 5
+  # 生产推荐：simple-shuffle（见官方 routing 文档；避开 #16060 v2 误判）
+  routing_strategy: simple-shuffle
+  # 同池多 deployment：某一个 401/404/429 先换 peer，不要整池报死
+  enable_weighted_failover: true
+  # 单个 deployment 最多重试一次；失败后尽快换 peer，再走跨池 fallbacks。
+  num_retries: 1
+  max_fallbacks: 8
+  # 冷却要短：智谱 GLM 等免费层「访问量过大」是常态、过一会又能用。
+  # 一次 429 只短暂让出（秒级），下次请求仍应再试，绝不能「失败一次就长期不用」。
+  # 真·坏 Key（401）用 allowed_fails_policy 立刻冷却；拥挤（429）高容忍。
+  cooldown_time: 5
   allowed_fails: 3
+  enable_pre_call_checks: true
+  retry_after: 1
+  retry_policy:
+    # 鉴权失败：别空转；限流/拥挤：多试几次 + 短冷却后再进池
+    AuthenticationErrorRetries: 0
+    BadRequestErrorRetries: 1
+    # 明确额度耗尽在 hook 中长熔断；通用 429 也只重试一次，尽快换 peer。
+    RateLimitErrorRetries: 1
+    TimeoutErrorRetries: 2
+    ContentPolicyViolationErrorRetries: 1
+  allowed_fails_policy:
+    AuthenticationErrorAllowedFails: 0
+    # 部分厂商把「繁忙」包成 400/BadRequest，勿 0 次就永久感冷冻
+    BadRequestErrorAllowedFails: 3
+    # 免费层 429 极常见：提高阈值，配合 cooldown_time=5 实现「稍后还试」
+    RateLimitErrorAllowedFails: 20
+    TimeoutErrorAllowedFails: 3
   redis_host: os.environ/REDIS_HOST
   redis_port: os.environ/REDIS_PORT
   redis_password: os.environ/REDIS_PASSWORD
@@ -926,17 +973,23 @@ router_settings:
 litellm_settings:
   # 任务输入超过 free-pool 渠道的 max_input_tokens 时，自动改路由到 strong-model-pool
   # 注意：trusted-pool 故意不在这条链路里，见上面的说明。
+  # 有向无环（弱→中→强→顶级）。顶级池在 litellm fallbacks 不再下跳，
+  # 避免 elite→free→…→elite 成环；顶级不可用时由 custom_router_hook 跨池选。
   context_window_fallbacks:
-    - free-pool: ["strong-model-pool"]
-    - fast-pool: ["free-pool", "strong-model-pool"]
+    - free-pool: ["strong-model-pool", "elite-model-pool"]
+    - fast-pool: ["free-pool", "strong-model-pool", "elite-model-pool"]
+    - strong-model-pool: ["elite-model-pool"]
 
   fallbacks:
-    - fast-pool: ["free-pool", "strong-model-pool"]
-    - free-pool: ["strong-model-pool"]
-    # fallback 图保持有向无环；强档失效时不再回退到 free-pool，
-    # 避免 free -> strong -> free 的版本依赖循环和质量语义倒退。
-    # trusted-pool 故意不设置 fallback：宁可报错，不可把敏感内容泄漏给
-    # 未经验证的第三方渠道（Agnes AI / 中转站）。
+    - fast-pool: ["free-pool", "strong-model-pool", "elite-model-pool"]
+    - free-pool: ["strong-model-pool", "elite-model-pool"]
+    - strong-model-pool: ["elite-model-pool"]
+    - auto-route: ["fast-pool", "free-pool", "strong-model-pool", "elite-model-pool"]
+    - mode-intelligent: ["fast-pool", "free-pool", "strong-model-pool", "elite-model-pool"]
+    - mode-weak: ["free-pool", "strong-model-pool", "elite-model-pool"]
+    - mode-mid: ["strong-model-pool", "elite-model-pool"]
+    - mode-strong: ["elite-model-pool"]
+    # mode-elite / elite-model-pool：不在此写回跳边；hook 负责可用性跨池
 
   callbacks:
     - gateway.custom_router_hook.proxy_handler_instance
@@ -948,7 +1001,7 @@ litellm_settings:
   # 返回一个“看似成功、实际协议已被破坏”的普通文本响应。
   drop_params: false
   request_timeout: 120
-  num_retries: 3
+  num_retries: 1
 
 general_settings:
   master_key: os.environ/GATEWAY_MASTER_KEY

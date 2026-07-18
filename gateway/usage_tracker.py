@@ -17,7 +17,7 @@ gateway/pricing.py 里，这个模块只负责把算好的数字存起来、按�
   · 分钟计数使用 60 秒固定窗口；日统计按 USAGE_TIMEZONE 的自然日分桶，
     到当地次日零点自动切换。Redis TTL 直接提供“还有多久重置”。
     分钟窗口仍不是"滑动窗口"——跟 LiteLLM Router 内部
-    usage-based-routing-v2 的滑动窗口算法不是同一套账本，仪表盘上看到的
+    Router 内部限流/冷却窗口不是同一套账本，仪表盘上看到的
     "这分钟用了几次"是一个近似值，用来给你一个大致的感觉，不代表
     Router 内部限流判断的精确依据。
   · 任何 Redis 操作失败（网络问题/没配 Redis/密码错）都静默吞掉、返回
@@ -64,6 +64,14 @@ except ZoneInfoNotFoundError:
     logger.warning("[ai-gateway-matrix] USAGE_TIMEZONE 无效，回退 UTC")
     USAGE_TZ = ZoneInfo("UTC")
 KEY_PREFIX = "gwmatrix:usage"
+
+# 顺畅时段：按「本地小时」累计成功/失败，跨多天合并到 0–23 点位
+SMOOTH_HOD_TTL_SECONDS = _positive_int_env("USAGE_SMOOTH_HOD_DAYS", 21) * 86400
+SMOOTH_RECENT_TTL_SECONDS = 3 * 86400  # 近 3 天滚动样本
+SMOOTH_MIN_SAMPLES_HOUR = _positive_int_env("USAGE_SMOOTH_MIN_SAMPLES_HOUR", 5)
+SMOOTH_MIN_SAMPLES_RECENT = _positive_int_env("USAGE_SMOOTH_MIN_SAMPLES_RECENT", 6)
+SMOOTH_GOOD_RATE = float(os.environ.get("USAGE_SMOOTH_GOOD_RATE", "0.75") or "0.75")
+SMOOTH_BUSY_RATE = float(os.environ.get("USAGE_SMOOTH_BUSY_RATE", "0.45") or "0.45")
 
 _client: Optional["aioredis.Redis"] = None
 
@@ -212,6 +220,33 @@ async def record_call(
 
         if error_class:
             await client.set(last_error_key, error_class, ex=day_ttl)
+
+        # 顺畅时段学习：按本地小时累加成功/失败（跨日合并到 hod 0–23）
+        try:
+            hour = datetime.now(USAGE_TZ).hour
+            hod_ok = f"{KEY_PREFIX}:{channel_id}:smooth:hod:{hour}:ok"
+            hod_fail = f"{KEY_PREFIX}:{channel_id}:smooth:hod:{hour}:fail"
+            hod_key = hod_ok if success else hod_fail
+            n = await client.incr(hod_key)
+            if n == 1:
+                await client.expire(hod_key, SMOOTH_HOD_TTL_SECONDS)
+            else:
+                ttl = await client.ttl(hod_key)
+                if ttl is None or ttl < 0:
+                    await client.expire(hod_key, SMOOTH_HOD_TTL_SECONDS)
+            # 最近滚动窗口（约 3 天）：用于「当前是否顺畅」
+            recent_ok = f"{KEY_PREFIX}:{channel_id}:smooth:recent:ok"
+            recent_fail = f"{KEY_PREFIX}:{channel_id}:smooth:recent:fail"
+            rkey = recent_ok if success else recent_fail
+            rn = await client.incr(rkey)
+            if rn == 1:
+                await client.expire(rkey, SMOOTH_RECENT_TTL_SECONDS)
+            else:
+                rttl = await client.ttl(rkey)
+                if rttl is None or rttl < 0:
+                    await client.expire(rkey, SMOOTH_RECENT_TTL_SECONDS)
+        except Exception:
+            pass
     except Exception as exc:
         logger.debug("[ai-gateway-matrix] 用量记录失败（不影响真实请求）: %s", exc)
 
@@ -298,6 +333,152 @@ async def get_usage(channel_id: str) -> dict:
         }
     except Exception as exc:
         logger.debug("[ai-gateway-matrix] 用量查询失败: %s", exc)
+        return default
+
+
+def _rate(ok: int, fail: int) -> Optional[float]:
+    total = ok + fail
+    if total <= 0:
+        return None
+    return ok / total
+
+
+def _format_hour_ranges(hours: list[int]) -> str:
+    """[2,3,4,14,15] → 「2–4 点、14–15 点」"""
+    if not hours:
+        return ""
+    hours = sorted(set(h % 24 for h in hours))
+    ranges: list[tuple[int, int]] = []
+    start = prev = hours[0]
+    for h in hours[1:]:
+        if h == prev + 1:
+            prev = h
+            continue
+        ranges.append((start, prev))
+        start = prev = h
+    ranges.append((start, prev))
+    parts = []
+    for a, b in ranges:
+        if a == b:
+            parts.append(f"{a} 点")
+        else:
+            parts.append(f"{a}–{b} 点")
+    return "、".join(parts)
+
+
+async def get_smoothness(channel_id: str) -> dict:
+    """根据历史成功/失败，标注免费模型的顺畅/拥挤时段。
+
+    使用一段时间后，各本地小时的成功率会显现；仪表盘据此打标，
+    不改变路由硬逻辑（仍靠 cooldown/fallback），仅作观察与排序提示。
+    """
+    client = _get_client()
+    default = {
+        "available": False,
+        "label": "学习中",
+        "label_level": "unknown",
+        "recent_success_rate": None,
+        "recent_samples": 0,
+        "best_hours": [],
+        "worst_hours": [],
+        "hint_zh": "使用一段时间后，将根据成功/失败标注顺畅时段",
+        "by_hour": [],
+        "current_hour": datetime.now(USAGE_TZ).hour,
+        "timezone": str(USAGE_TZ),
+    }
+    if client is None or not channel_id:
+        return default
+
+    try:
+        now_h = datetime.now(USAGE_TZ).hour
+        pipe = client.pipeline()
+        for h in range(24):
+            pipe.get(f"{KEY_PREFIX}:{channel_id}:smooth:hod:{h}:ok")
+            pipe.get(f"{KEY_PREFIX}:{channel_id}:smooth:hod:{h}:fail")
+        pipe.get(f"{KEY_PREFIX}:{channel_id}:smooth:recent:ok")
+        pipe.get(f"{KEY_PREFIX}:{channel_id}:smooth:recent:fail")
+        vals = await pipe.execute()
+
+        by_hour: list[dict] = []
+        best: list[tuple[int, float, int]] = []
+        worst: list[tuple[int, float, int]] = []
+        for h in range(24):
+            ok = int(vals[h * 2] or 0)
+            fail = int(vals[h * 2 + 1] or 0)
+            total = ok + fail
+            rate = _rate(ok, fail)
+            entry = {
+                "hour": h,
+                "ok": ok,
+                "fail": fail,
+                "samples": total,
+                "success_rate": rate,
+            }
+            by_hour.append(entry)
+            if total >= SMOOTH_MIN_SAMPLES_HOUR and rate is not None:
+                best.append((h, rate, total))
+                worst.append((h, rate, total))
+
+        best_hours = [h for h, r, _ in sorted(best, key=lambda x: (-x[1], -x[2])) if r >= SMOOTH_GOOD_RATE][:8]
+        worst_hours = [h for h, r, _ in sorted(worst, key=lambda x: (x[1], -x[2])) if r <= SMOOTH_BUSY_RATE][:8]
+
+        recent_ok = int(vals[48] or 0)
+        recent_fail = int(vals[49] or 0)
+        recent_samples = recent_ok + recent_fail
+        recent_rate = _rate(recent_ok, recent_fail)
+
+        # 当前小时标签
+        cur = by_hour[now_h]
+        cur_rate = cur["success_rate"]
+        cur_n = cur["samples"]
+
+        if recent_samples < SMOOTH_MIN_SAMPLES_RECENT and cur_n < SMOOTH_MIN_SAMPLES_HOUR:
+            label, level = "学习中", "unknown"
+            hint = "样本还少，多用不一样的时段后会标注顺畅/拥挤"
+        elif recent_rate is not None and recent_samples >= SMOOTH_MIN_SAMPLES_RECENT:
+            if recent_rate >= SMOOTH_GOOD_RATE:
+                label, level = "近期顺畅", "smooth"
+            elif recent_rate <= SMOOTH_BUSY_RATE:
+                label, level = "近期易拥挤", "busy"
+            else:
+                label, level = "一般", "mixed"
+            hint_parts = [f"近 3 天成功率 {recent_rate * 100:.0f}%（{recent_samples} 次）"]
+            if best_hours:
+                hint_parts.append(f"较顺：{_format_hour_ranges(best_hours)}")
+            if worst_hours:
+                hint_parts.append(f"易堵：{_format_hour_ranges(worst_hours)}")
+            if cur_n >= SMOOTH_MIN_SAMPLES_HOUR and cur_rate is not None:
+                hint_parts.append(f"此刻（{now_h} 点）历史成功率 {cur_rate * 100:.0f}%")
+            hint = " · ".join(hint_parts)
+        elif cur_n >= SMOOTH_MIN_SAMPLES_HOUR and cur_rate is not None:
+            if cur_rate >= SMOOTH_GOOD_RATE:
+                label, level = f"{now_h} 点较顺", "smooth"
+            elif cur_rate <= SMOOTH_BUSY_RATE:
+                label, level = f"{now_h} 点易堵", "busy"
+            else:
+                label, level = f"{now_h} 点一般", "mixed"
+            hint = f"该小时历史成功率 {cur_rate * 100:.0f}%（{cur_n} 次）"
+            if best_hours:
+                hint += f" · 全天较顺：{_format_hour_ranges(best_hours)}"
+        else:
+            label, level = "学习中", "unknown"
+            hint = "继续使用后会按小时汇总顺畅时段"
+
+        return {
+            "available": True,
+            "label": label,
+            "label_level": level,
+            "recent_success_rate": recent_rate,
+            "recent_samples": recent_samples,
+            "best_hours": best_hours,
+            "worst_hours": worst_hours,
+            "hint_zh": hint,
+            "by_hour": by_hour,
+            "current_hour": now_h,
+            "timezone": str(USAGE_TZ),
+        }
+    except Exception as exc:
+        logger.debug("[ai-gateway-matrix] 顺畅时段查询失败: %s", exc)
         return default
 
 

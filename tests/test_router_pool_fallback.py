@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
 from gateway.custom_router_hook import (
     ComplexityRouterHook,
     FAST_POOL,
@@ -36,10 +34,11 @@ def test_fast_text_can_fall_up_to_configured_strong_channel(monkeypatch):
     assert target == STRONG_POOL
 
 
-def test_strong_text_never_silently_downgrades(monkeypatch):
+def test_strong_text_falls_to_configured_free_channel(monkeypatch):
     monkeypatch.setenv("ONLY_FREE_KEY", "fixture")
     free = {"env_var": "ONLY_FREE_KEY", "direct_model_name": "direct-free"}
     hook = _hook(FakeRegistry({FREE_POOL: [free]}))
 
-    with pytest.raises(RuntimeError, match="没有已配置"):
-        asyncio.run(hook._resolve_capability_target(STRONG_POOL, {"text"}))
+    target = asyncio.run(hook._resolve_capability_target(STRONG_POOL, {"text"}))
+
+    assert target == FREE_POOL
