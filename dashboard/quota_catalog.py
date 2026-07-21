@@ -248,32 +248,11 @@ PROVIDER_QUOTAS: dict[str, dict[str, Any]] = {
     },
     "AGNES_API_KEY": {
         "docs_url": "https://platform.agnes-ai.com/",
-        "note_zh": (
-            "免费账户按 Effective RPM（有效限制）计，勿只看 Allowed RPM。"
-            "文本 agnes-2.0-flash：Allowed 常见 30、Effective 实际 20 RPM；"
-            "图片 1K=20 / 2K=10 / 3K=1 / 4K=1 张/分钟；视频 1 次/分钟。"
-            "公开文档未标日/周/月调用总量，现行规则主要为 RPM 限流（非每日固定 Token 包）。"
-            "观察期渠道，条款可能突变；控制台为准。"
-        ),
+        # 详情只在 docs 链里；看板只展示主周期 RPM，避免图片/视频多行噪音
+        "note_zh": "文本 Effective RPM≈20/分（聊天主路径）。图/视频另有更低限额，见文档。",
         "windows": [
-            # 文本：以 Effective RPM=20 为准（Allowed 表可能写 30）
             {"id": "rpm", "metric": "requests", "window_sec": MIN, "limit": 20, "source": "docs",
-             "label_zh": "文本 Effective RPM（agnes-2.0-flash）", "label_en": "Text Effective RPM"},
-            {"id": "img_1k_rpm", "metric": "requests", "window_sec": MIN, "limit": 20, "source": "docs",
-             "label_zh": "图片 1K 张/分钟", "label_en": "Image 1K / min"},
-            {"id": "img_2k_rpm", "metric": "requests", "window_sec": MIN, "limit": 10, "source": "docs",
-             "label_zh": "图片 2K 张/分钟", "label_en": "Image 2K / min"},
-            {"id": "img_3k_rpm", "metric": "requests", "window_sec": MIN, "limit": 1, "source": "docs",
-             "label_zh": "图片 3K 张/分钟", "label_en": "Image 3K / min"},
-            {"id": "img_4k_rpm", "metric": "requests", "window_sec": MIN, "limit": 1, "source": "docs",
-             "label_zh": "图片 4K 张/分钟", "label_en": "Image 4K / min"},
-            {"id": "video_rpm", "metric": "requests", "window_sec": MIN, "limit": 1, "source": "docs",
-             "label_zh": "视频 次/分钟", "label_en": "Video / min"},
-            # 无公开日/月总量：limit=None，仅作占位说明
-            {"id": "rpd", "metric": "requests", "window_sec": DAY, "limit": None, "source": "docs",
-             "label_zh": "每日总量（公开未标）", "label_en": "Daily total (not published)"},
-            {"id": "month_tokens", "metric": "tokens", "window_sec": MONTH, "limit": None, "source": "docs",
-             "label_zh": "每月 tokens（公开未标）", "label_en": "Monthly tokens (not published)"},
+             "label_zh": "当前周期（每分钟）", "label_en": "Current period (per minute)"},
         ],
     },
     "GENERALCOMPUTE_API_KEY": {
@@ -428,6 +407,7 @@ def build_rate_limits(
     env_var: Optional[str],
     config_rpm: Optional[int] = None,
     usage: Optional[dict] = None,
+    quota_kind: Optional[str] = None,
 ) -> dict[str, Any]:
     """合并文档限额 + 自动跟进 + config rpm + 运行时用量。"""
     usage = usage or {}
@@ -508,16 +488,32 @@ def build_rate_limits(
                 reset = usage.get("seconds_until_day_reset")
                 tracked = used is not None
             elif metric == "tokens" and wsec == MIN:
-                # 暂无分钟 token 账本
-                tracked = False
+                used = usage.get("minute_tokens")
+                reset = usage.get("seconds_until_minute_reset")
+                tracked = used is not None
+            elif metric == "tokens" and wsec == MONTH:
+                if quota_kind == "once" or w.get("id") == "trial_tokens":
+                    used = usage.get("total_tokens")
+                    reset = None
+                    tracked = used is not None
+                else:
+                    used = usage.get("month_tokens")
+                    reset = usage.get("seconds_until_month_reset")
+                    tracked = used is not None
+                    w["usage_estimated"] = bool(usage.get("month_tokens_estimated"))
         w["used"] = used if tracked else None
         w["seconds_until_reset"] = reset if tracked else None
         w["usage_tracked"] = tracked
-        w["window_label"] = _window_label(wsec)
+        w["window_label"] = (
+            "累计"
+            if metric == "tokens" and wsec == MONTH
+            and (quota_kind == "once" or w.get("id") == "trial_tokens")
+            else _window_label(wsec)
+        )
 
     note_zh = entry.get("note_zh") or (
         "限额来自公开文档与本机 config；账号档位变化时以官方控制台为准。"
-        "本机仅实时统计「分钟请求 / 日请求 / 日 tokens」。"
+        "本机实时统计分钟/日请求，以及分钟/日/月/累计 tokens。"
     )
     auto = entry.get("auto_refresh") if isinstance(entry.get("auto_refresh"), dict) else None
     if auto and auto.get("checked_at"):
@@ -531,13 +527,89 @@ def build_rate_limits(
             extra += f" · {auto['free_kind']}"
         note_zh = f"{note_zh}（{extra}）"
 
+    summary = summarize_primary_quota(windows, usage)
     return {
         "docs_url": entry.get("docs_url") or "",
         "windows": windows,
+        "summary": summary,
         "note_zh": note_zh,
         "note_en": entry.get("note_en") or (
             "Limits merge public docs with local config; account tier may differ. "
-            "Live usage tracks minute/day requests and day tokens only."
+            "Live usage tracks minute/day requests and minute/day/month/lifetime tokens."
         ),
         "auto_refresh": auto,
+    }
+
+
+def summarize_primary_quota(
+    windows: list[dict[str, Any]],
+    usage: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """提炼用户真正关心的两行：当前周期剩余% + 总 token 消耗。
+
+    周期优先级：日请求(RPD) > 月 tokens > 日 tokens > 分钟 RPM（免费层常见）。
+    无 limit 的窗口只展示已用量，不算百分比。
+    """
+    usage = usage or {}
+    candidates = [w for w in windows if isinstance(w, dict)]
+    preferred_ids = ("rpd", "month_tokens", "tpd", "rpm", "tpm")
+    primary: Optional[dict[str, Any]] = None
+    for pid in preferred_ids:
+        for w in candidates:
+            if w.get("id") == pid and w.get("limit") not in (None, 0, ""):
+                try:
+                    if float(w["limit"]) > 0:
+                        primary = w
+                        break
+                except (TypeError, ValueError):
+                    continue
+        if primary is not None:
+            break
+    if primary is None:
+        for w in candidates:
+            try:
+                if w.get("limit") is not None and float(w["limit"]) > 0:
+                    primary = w
+                    break
+            except (TypeError, ValueError):
+                continue
+
+    remaining_pct: Optional[float] = None
+    used = None
+    limit = None
+    period_label = "当前周期"
+    if primary is not None:
+        period_label = str(primary.get("label_zh") or primary.get("window_label") or "当前周期")
+        try:
+            limit = float(primary["limit"])
+            used_raw = primary.get("used")
+            if used_raw is None and usage.get("available"):
+                # 兜底：按窗口类型从 usage 取
+                wsec = int(primary.get("window_sec") or 0)
+                metric = primary.get("metric")
+                if metric == "requests" and wsec == MIN:
+                    used_raw = usage.get("calls_this_minute")
+                elif metric == "requests" and wsec == DAY:
+                    used_raw = usage.get("calls_today")
+                elif metric == "tokens" and wsec == DAY:
+                    used_raw = usage.get("day_tokens")
+                elif metric == "tokens" and wsec == MONTH:
+                    used_raw = usage.get("month_tokens") or usage.get("total_tokens")
+            if used_raw is not None and limit > 0:
+                used = float(used_raw)
+                remaining_pct = max(0.0, min(100.0, round((1.0 - used / limit) * 100.0, 1)))
+        except (TypeError, ValueError):
+            remaining_pct = None
+
+    total_tokens = usage.get("total_tokens") if usage.get("available") else None
+    day_tokens = usage.get("day_tokens") if usage.get("available") else None
+
+    return {
+        "period_label": period_label,
+        "remaining_pct": remaining_pct,
+        "used": used,
+        "limit": limit,
+        "total_tokens": total_tokens,
+        "day_tokens": day_tokens,
+        "seconds_until_reset": (primary or {}).get("seconds_until_reset"),
     }

@@ -386,4 +386,11 @@ cat <<'EOF'
 常用命令：
   docker compose logs -f
   docker compose down
+
+改代码后（gateway/*.py 或 dashboard/*.py）：
+  docker compose restart ai-gateway-matrix dashboard
+  （静态 HTML 热更新无需重启；Python 不热重载）
+
+闭环说明：
+  智脑分档 → 强制非流式 → 质检 → 不合格换家（router num_retries）
 EOF

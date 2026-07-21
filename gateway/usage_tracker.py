@@ -84,25 +84,22 @@ def _day_window(now: Optional[datetime] = None) -> tuple[str, int]:
     return current.strftime("%Y%m%d"), ttl
 
 
+def _month_window(now: Optional[datetime] = None) -> tuple[str, int]:
+    """返回本地自然月分桶和距离下月一日的 TTL。"""
+    current = now.astimezone(USAGE_TZ) if now is not None else datetime.now(USAGE_TZ)
+    if current.month == 12:
+        next_month = datetime(current.year + 1, 1, 1, tzinfo=USAGE_TZ)
+    else:
+        next_month = datetime(current.year, current.month + 1, 1, tzinfo=USAGE_TZ)
+    ttl = max(1, int((next_month - current).total_seconds()) + 60)
+    return current.strftime("%Y%m"), ttl
+
+
 def make_channel_id(model: str, api_base: Optional[str] = None, api_key: Optional[str] = None) -> str:
-    """构造一个用于"用量统计查找"的稳定标识。
+    """旧版「按模型」用量 id（兼容历史 Redis 键与少量指纹场景）。
 
-    仅用 model+api_base 不够——config.yaml 里 Mistral 的两个账号
-    （MISTRAL_KEY_1 / MISTRAL_KEY_2）用的是完全相同的 model 字符串、
-    都没设 api_base，只有 api_key 不同，这种情况下如果不把 api_key
-    也纳入标识，两个账号的用量会被统计成同一份，仪表盘上也会显示成
-    同一张卡片（这是实测中发现的真实 bug，不是假设）。
-
-    这里不直接拼接真实的 api_key 值（那是密钥，不该出现在 Redis 的 key
-    名字里，万一 Redis 被谁 dump 出来查看就是一次额外的泄漏面），而是
-    取一个不可逆的短哈希（sha256 前 8 位）。gateway/custom_router_hook.py 在
-    请求时能拿到解析后的真实 api_key，dashboard/channel_loader.py 读
-    .env 文件时也能拿到同一个真实值，两边各自算出的哈希后缀是一致的，
-    足够互相对上号；但没办法从哈希反推出真实的 key 是什么。
-
-    注意：这个函数算出来的 id 只用于"用量统计查找"，不是仪表盘 UI 上
-    每一行的持久化标识（那个用 channel_loader.py 里稳定的
-    "model@api_base#env_var" 格式，不依赖账号是否已经配置了真实 key）。
+    新用量账本请用 ``make_usage_key``：同一 Key（同一 env）下的多模型/多档位
+    共用额度，不再按模型拆成多份。
     """
     base = api_base or "default"
     channel_id = f"{model}@{base}"
@@ -110,6 +107,25 @@ def make_channel_id(model: str, api_base: Optional[str] = None, api_key: Optiona
         suffix = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:8]
         channel_id = f"{channel_id}#{suffix}"
     return channel_id
+
+
+def make_usage_key(
+    model: str = "",
+    api_base: Optional[str] = None,
+    api_key: Optional[str] = None,
+    env_var: Optional[str] = None,
+) -> str:
+    """用量统计主键。
+
+    **同一环境变量 = 同一 Key = 同一份额度账本**（Mistral 跨弱/中/强多模型、
+    硅基同 Key 多模型等）。不同 env（如 MISTRAL_KEY_1 / KEY_3）仍分开。
+
+    无 env_var 时回退到旧 make_channel_id，避免无凭据路径丢统计。
+    """
+    env = (env_var or "").strip()
+    if env:
+        return f"cred:{env}"
+    return make_channel_id(model or "unknown", api_base, api_key)
 
 
 def get_client():
@@ -146,6 +162,7 @@ async def record_call(
     cost_source: str = "unknown",
     latency_ms: Optional[float] = None,
     error_class: Optional[str] = None,
+    event_id: Optional[str] = None,
 ) -> None:
     """记录一次调用。只做统计用途，任何异常都静默忽略。
 
@@ -163,11 +180,15 @@ async def record_call(
 
     status = "ok" if success else "fail"
     day_bucket, day_ttl = _day_window()
+    month_bucket, month_ttl = _month_window()
     minute_key = f"{KEY_PREFIX}:{channel_id}:minute"
+    minute_tokens_key = f"{KEY_PREFIX}:{channel_id}:minute:tokens"
     day_key = f"{KEY_PREFIX}:{channel_id}:day:{day_bucket}"
     day_status_key = f"{KEY_PREFIX}:{channel_id}:day:{day_bucket}:{status}"
     day_tokens_key = f"{KEY_PREFIX}:{channel_id}:day:{day_bucket}:tokens"
     total_tokens_key = f"{KEY_PREFIX}:{channel_id}:total:tokens"
+    month_tokens_key = f"{KEY_PREFIX}:{channel_id}:month:{month_bucket}:tokens"
+    month_migration_key = f"{KEY_PREFIX}:{channel_id}:migration:month_tokens_v1"
     day_cost_key = f"{KEY_PREFIX}:{channel_id}:day:{day_bucket}:cost"
     total_cost_key = f"{KEY_PREFIX}:{channel_id}:total:cost"
     cost_source_key = f"{KEY_PREFIX}:{channel_id}:last_cost_source"
@@ -178,6 +199,11 @@ async def record_call(
     total_tokens = prompt_tokens + completion_tokens
 
     try:
+        if event_id:
+            event_hash = hashlib.sha256(str(event_id).encode("utf-8")).hexdigest()[:24]
+            dedupe_key = f"{KEY_PREFIX}:{channel_id}:event:{event_hash}"
+            if not await client.set(dedupe_key, "1", ex=3600, nx=True):
+                return
         # 固定窗口计数：第一次 INCR 命中 1 时才设置 TTL，避免每次调用都把
         # 窗口往后推（那样就变成"只要一直有请求，永远不重置"了）。
         for key, ttl in ((minute_key, MINUTE_TTL_SECONDS), (day_key, day_ttl), (day_status_key, day_ttl)):
@@ -186,6 +212,10 @@ async def record_call(
                 await client.expire(key, ttl)
 
         if total_tokens > 0:
+            await client.incrby(minute_tokens_key, total_tokens)
+            ttl = await client.ttl(minute_tokens_key)
+            if ttl is None or ttl < 0:
+                await client.expire(minute_tokens_key, MINUTE_TTL_SECONDS)
             await client.incrby(day_tokens_key, total_tokens)
             # 不通过“累计值 == 本次增量”推断是否首次写入。如果之前
             # INCRBY 已成功但 EXPIRE 失败，key 会存在却没有 TTL；后续调用
@@ -193,6 +223,22 @@ async def record_call(
             ttl = await client.ttl(day_tokens_key)
             if ttl is None or ttl < 0:
                 await client.expire(day_tokens_key, day_ttl)
+            # v3 之前只有累计 tokens，没有自然月账本。每个渠道首次写新版月账本时，
+            # 用旧累计值做一次可审计迁移；迁移标记保留后，下个自然月从 0 正常开始。
+            if await client.get(month_tokens_key) is None:
+                migrated = await client.set(
+                    month_migration_key, "1", ex=TOTAL_RETENTION_SECONDS, nx=True,
+                )
+                if migrated:
+                    previous_total = int(await client.get(total_tokens_key) or 0)
+                    if previous_total > 0:
+                        await client.set(
+                            month_tokens_key, previous_total, ex=month_ttl, nx=True,
+                        )
+            await client.incrby(month_tokens_key, total_tokens)
+            ttl = await client.ttl(month_tokens_key)
+            if ttl is None or ttl < 0:
+                await client.expire(month_tokens_key, month_ttl)
             await client.incrby(total_tokens_key, total_tokens)
             await client.expire(total_tokens_key, TOTAL_RETENTION_SECONDS)
 
@@ -260,10 +306,14 @@ async def get_usage(channel_id: str) -> dict:
     client = _get_client()
     default = {
         "calls_this_minute": 0,
+        "minute_tokens": 0,
         "seconds_until_minute_reset": 0,
         "calls_today": 0,
         "seconds_until_day_reset": 0,
         "day_tokens": 0,
+        "month_tokens": 0,
+        "month_tokens_estimated": False,
+        "seconds_until_month_reset": 0,
         "total_tokens": 0,
         "day_cost": None,
         "total_cost": None,
@@ -278,10 +328,14 @@ async def get_usage(channel_id: str) -> dict:
         return default
 
     day_bucket, _day_ttl = _day_window()
+    month_bucket, _month_ttl = _month_window()
     minute_key = f"{KEY_PREFIX}:{channel_id}:minute"
+    minute_tokens_key = f"{KEY_PREFIX}:{channel_id}:minute:tokens"
     day_key = f"{KEY_PREFIX}:{channel_id}:day:{day_bucket}"
     day_tokens_key = f"{KEY_PREFIX}:{channel_id}:day:{day_bucket}:tokens"
     total_tokens_key = f"{KEY_PREFIX}:{channel_id}:total:tokens"
+    month_tokens_key = f"{KEY_PREFIX}:{channel_id}:month:{month_bucket}:tokens"
+    month_migration_key = f"{KEY_PREFIX}:{channel_id}:migration:month_tokens_v1"
     day_cost_key = f"{KEY_PREFIX}:{channel_id}:day:{day_bucket}:cost"
     total_cost_key = f"{KEY_PREFIX}:{channel_id}:total:cost"
     cost_source_key = f"{KEY_PREFIX}:{channel_id}:last_cost_source"
@@ -295,10 +349,14 @@ async def get_usage(channel_id: str) -> dict:
         pipe = client.pipeline()
         pipe.get(minute_key)
         pipe.ttl(minute_key)
+        pipe.get(minute_tokens_key)
         pipe.get(day_key)
         pipe.ttl(day_key)
         pipe.get(day_tokens_key)
         pipe.get(total_tokens_key)
+        pipe.get(month_tokens_key)
+        pipe.ttl(month_tokens_key)
+        pipe.get(month_migration_key)
         pipe.get(day_cost_key)
         pipe.get(total_cost_key)
         pipe.get(cost_source_key)
@@ -308,17 +366,26 @@ async def get_usage(channel_id: str) -> dict:
         pipe.get(latency_samples_key)
         pipe.get(last_error_key)
         (
-            minute_count, minute_ttl, day_count, day_ttl,
-            day_tokens, total_tokens, day_cost, total_cost, cost_source,
+            minute_count, minute_ttl, minute_tokens, day_count, day_ttl,
+            day_tokens, total_tokens, month_tokens, month_ttl, month_migrated,
+            day_cost, total_cost, cost_source,
             day_ok, day_fail, latency_total, latency_samples, last_error,
         ) = await pipe.execute()
         latency_count = int(latency_samples) if latency_samples else 0
+        # 升级后的第一次新请求到来前，旧数据尚未写入月键。此时展示历史累计
+        # 作为“本月估算”，避免把已消耗额度伪装成 0；首次新请求会完成一次迁移。
+        month_estimated = month_tokens is None and not month_migrated and bool(total_tokens)
+        visible_month_tokens = total_tokens if month_estimated else month_tokens
         return {
             "calls_this_minute": int(minute_count) if minute_count else 0,
+            "minute_tokens": int(minute_tokens) if minute_tokens else 0,
             "seconds_until_minute_reset": minute_ttl if minute_ttl and minute_ttl > 0 else 0,
             "calls_today": int(day_count) if day_count else 0,
             "seconds_until_day_reset": day_ttl if day_ttl and day_ttl > 0 else 0,
             "day_tokens": int(day_tokens) if day_tokens else 0,
+            "month_tokens": int(visible_month_tokens) if visible_month_tokens else 0,
+            "month_tokens_estimated": month_estimated,
+            "seconds_until_month_reset": month_ttl if month_ttl and month_ttl > 0 else 0,
             "total_tokens": int(total_tokens) if total_tokens else 0,
             "day_cost": float(day_cost) if day_cost else None,
             "total_cost": float(total_cost) if total_cost else None,
@@ -334,6 +401,101 @@ async def get_usage(channel_id: str) -> dict:
     except Exception as exc:
         logger.debug("[ai-gateway-matrix] 用量查询失败: %s", exc)
         return default
+
+
+async def get_usage_merged(channel_ids: list[str]) -> dict:
+    """合并多个 usage 账本（用于 cred: 新键 + 旧「模型@base#hash」历史键）。
+
+    历史 token 并未因重启丢失；改用「按 Key 共用」主键后，若只读新键会
+    看起来像归零。这里把同一账号下旧键加总，恢复仪表盘可见历史。
+    """
+    keys: list[str] = []
+    for key in channel_ids or []:
+        k = (key or "").strip()
+        if k and k not in keys:
+            keys.append(k)
+    if not keys:
+        return await get_usage("")
+    if len(keys) == 1:
+        return await get_usage(keys[0])
+
+    parts = [await get_usage(k) for k in keys]
+    available = any(bool(p.get("available")) for p in parts)
+    if not available:
+        return parts[0]
+
+    def _sum_int(field: str) -> int:
+        return sum(int(p.get(field) or 0) for p in parts if p.get("available"))
+
+    def _sum_float(field: str) -> Optional[float]:
+        vals = [
+            float(p[field])
+            for p in parts
+            if p.get("available") and p.get(field) is not None
+        ]
+        return sum(vals) if vals else None
+
+    # 延迟：按样本加权平均
+    lat_num = 0.0
+    lat_den = 0
+    for p in parts:
+        if not p.get("available"):
+            continue
+        avg = p.get("average_latency_ms_today")
+        ok = int(p.get("successful_calls_today") or 0)
+        fail = int(p.get("failed_calls_today") or 0)
+        n = ok + fail
+        if avg is not None and n > 0:
+            lat_num += float(avg) * n
+            lat_den += n
+
+    cost_sources = {
+        str(p.get("cost_source") or "unknown")
+        for p in parts
+        if p.get("available") and p.get("cost_source")
+    }
+    if "estimated" in cost_sources:
+        cost_source = "estimated"
+    elif "litellm" in cost_sources:
+        cost_source = "litellm"
+    else:
+        cost_source = next(iter(cost_sources), "unknown")
+
+    last_error = None
+    for p in parts:
+        if p.get("last_error_class"):
+            last_error = p["last_error_class"]
+            break
+
+    return {
+        "calls_this_minute": _sum_int("calls_this_minute"),
+        "minute_tokens": _sum_int("minute_tokens"),
+        "seconds_until_minute_reset": max(
+            (int(p.get("seconds_until_minute_reset") or 0) for p in parts), default=0
+        ),
+        "calls_today": _sum_int("calls_today"),
+        "seconds_until_day_reset": max(
+            (int(p.get("seconds_until_day_reset") or 0) for p in parts), default=0
+        ),
+        "day_tokens": _sum_int("day_tokens"),
+        "month_tokens": _sum_int("month_tokens"),
+        "month_tokens_estimated": any(
+            bool(p.get("month_tokens_estimated")) for p in parts if p.get("available")
+        ),
+        "seconds_until_month_reset": max(
+            (int(p.get("seconds_until_month_reset") or 0) for p in parts), default=0
+        ),
+        "total_tokens": _sum_int("total_tokens"),
+        "day_cost": _sum_float("day_cost"),
+        "total_cost": _sum_float("total_cost"),
+        "cost_source": cost_source,
+        "successful_calls_today": _sum_int("successful_calls_today"),
+        "failed_calls_today": _sum_int("failed_calls_today"),
+        "average_latency_ms_today": (lat_num / lat_den) if lat_den else None,
+        "last_error_class": last_error,
+        "available": True,
+        "merged_from": len(keys),
+    }
 
 
 def _rate(ok: int, fail: int) -> Optional[float]:

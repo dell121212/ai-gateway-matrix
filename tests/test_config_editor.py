@@ -5,6 +5,8 @@ import yaml
 
 from gateway import channel_ids
 from dashboard.config_editor import (
+    add_custom_channel,
+    delete_channel,
     normalize_upstream_model,
     strip_litellm_provider,
     update_model,
@@ -66,7 +68,7 @@ def test_model_update_keeps_unanchored_direct_copy_in_sync(tmp_path: Path):
     assert direct["litellm_params"] == main["litellm_params"]
 
 
-def test_model_update_keeps_anchored_trusted_and_direct_entries_in_sync(tmp_path: Path):
+def test_model_update_keeps_groq_direct_entry_in_sync_without_trusted_access(tmp_path: Path):
     source = Path(__file__).resolve().parents[1] / "config.yaml"
     target = tmp_path / "config.yaml"
     shutil.copy2(source, target)
@@ -75,23 +77,22 @@ def test_model_update_keeps_anchored_trusted_and_direct_entries_in_sync(tmp_path
     env_var = "GROQ_API_KEY"
 
     assert update_model(
-        target, "free-pool", old_model, None, env_var, new_model
+        target, "fast-pool", old_model, None, env_var, new_model
     )
     config = yaml.safe_load(target.read_text(encoding="utf-8"))
     main = next(
         item for item in config["model_list"]
-        if item["model_name"] == "free-pool"
+        if item["model_name"] == "fast-pool"
         and item["litellm_params"]["model"] == new_model
     )
     new_direct = channel_ids.make_direct_model_name(new_model, None, env_var)
     direct = next(item for item in config["model_list"] if item["model_name"] == new_direct)
-    trusted = next(
-        item for item in config["model_list"]
-        if item["model_name"] == "trusted-pool"
-        and item["litellm_params"]["model"] == new_model
-    )
     assert direct["litellm_params"] == main["litellm_params"]
-    assert trusted["litellm_params"] == main["litellm_params"]
+    assert not any(
+        item["model_name"] == "trusted-pool"
+        and item["litellm_params"]["model"] == new_model
+        for item in config["model_list"]
+    )
 
 
 def test_model_update_rejects_yaml_injection(tmp_path: Path):
@@ -199,3 +200,40 @@ def test_env_writer_quotes_compose_interpolation_characters(tmp_path: Path):
     assert read_env_file(env_path) == {
         "GLM_API_KEY": "key-$literal value'part"
     }
+
+
+def test_custom_channel_can_be_added_then_deleted(tmp_path: Path):
+    source = Path(__file__).resolve().parents[1] / "config.yaml"
+    target = tmp_path / "config.yaml"
+    shutil.copy2(source, target)
+
+    added = add_custom_channel(
+        target,
+        provider_name="My Free API",
+        api_base="https://free.example/v1",
+        api_key="secret-key",
+        model="vendor/model-70b",
+        pool="strong-model-pool",
+    )
+    config = yaml.safe_load(target.read_text(encoding="utf-8"))
+    main = next(
+        item for item in config["model_list"]
+        if item.get("model_name") == "strong-model-pool"
+        and (item.get("litellm_params") or {}).get("api_key") == f"os.environ/{added['env_var']}"
+    )
+    assert main["litellm_params"]["model"] == "openai/vendor/model-70b"
+    assert main["model_info"]["custom_provider_name"] == "My Free API"
+    assert any(item.get("model_name") == added["direct_model_name"] for item in config["model_list"])
+
+    assert delete_channel(
+        target,
+        pool="strong-model-pool",
+        model="openai/vendor/model-70b",
+        api_base="https://free.example/v1",
+        env_var=added["env_var"],
+    )
+    after = yaml.safe_load(target.read_text(encoding="utf-8"))
+    assert not any(
+        (item.get("litellm_params") or {}).get("api_key") == f"os.environ/{added['env_var']}"
+        for item in after["model_list"]
+    )

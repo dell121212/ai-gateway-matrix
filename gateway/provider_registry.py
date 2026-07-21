@@ -214,8 +214,12 @@ class ProviderRegistry:
         response_format = data.get("response_format")
         if isinstance(response_format, dict):
             response_type = response_format.get("type")
-            if response_type in {"json_object", "json_schema"}:
-                requirements.add(str(response_type))
+            # json_object 只要求模型输出合法 JSON，调用方仍可本地校验；把它
+            # 当硬能力会让 hook 提前改写成单个 direct-*，从而丢失 Router
+            # 的池内重试与跨池 fallback。json_schema 有严格结构约束，仍需
+            # 精确选择声明支持它的渠道。
+            if response_type == "json_schema":
+                requirements.add("json_schema")
         if data.get("audio") or "audio" in (data.get("modalities") or []):
             requirements.add("audio")
         for message in data.get("messages") or []:

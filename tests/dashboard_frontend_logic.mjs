@@ -8,6 +8,9 @@ if (!html.includes('id="apiBaseValue"') || !html.includes("AI API 控制台")) {
 if (!html.includes("累计节省") || html.includes("预计累计花费")) {
   throw new Error("cumulative savings hero metric is missing");
 }
+if (!html.includes("智能添加免费 API") || !html.includes("deleteChannel('${ch.channel_id}')")) {
+  throw new Error("custom API discovery or channel deletion UI is missing");
+}
 const start = html.indexOf("<script>") + "<script>".length;
 const end = html.lastIndexOf("</script>");
 if (start < "<script>".length || end < start) throw new Error("dashboard script not found");
@@ -91,8 +94,31 @@ vm.runInContext(`
     throw new Error("manual priority was not strongest inside the same sink group");
   }
 
+  const accountGroups = groupChannelsByAccount([
+    {...configured, channel_id: "m1", company_id: "mistral", company_name: "Mistral", env_var: "MISTRAL_KEY_1", account_index: 1},
+    {...configured, channel_id: "m2", company_id: "mistral", company_name: "Mistral", env_var: "MISTRAL_KEY_2", account_index: 2},
+  ]);
+  if (accountGroups.length !== 2 || accountGroups[0].key === accountGroups[1].key) {
+    throw new Error("multiple accounts were not rendered as independent panel groups");
+  }
+  const accountCard = renderCard(accountGroups[1].items[0], accountGroups[1].items, accountGroups[1].key);
+  if (!accountCard.includes("Mistral · 账号 2") || accountCard.includes('aria-label="选择账号"')) {
+    throw new Error("account card still uses an account switcher instead of an independent panel");
+  }
+
   if (fmtTokensM(3778) !== "0.0038M" || fmtTokensM(2500000) !== "2.50M") {
     throw new Error("token usage was not formatted in millions");
+  }
+
+  const unknownQuota = renderQuotaPanel({
+    channel_id: "unknown-quota",
+    rate_limits: {windows: [{
+      id: "month_tokens", metric: "tokens", window_sec: 2592000,
+      limit: 4000000, used: null, label_zh: "每月 tokens",
+    }]},
+  });
+  if (unknownQuota.includes("0/4M") || !unknownQuota.includes("—/4M")) {
+    throw new Error("untracked quota was incorrectly rendered as unused");
   }
 
   searchQuery = "general compute";

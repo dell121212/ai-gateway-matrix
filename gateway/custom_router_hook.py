@@ -67,6 +67,7 @@ import litellm
 from litellm.integrations.custom_logger import CustomLogger
 
 from . import (
+    answer_verifier,
     env_sync,
     llm_classifier,
     optimal_channels,
@@ -239,13 +240,44 @@ MID_FLOOR_PATTERNS = (
 
 QUALITY_GUARDED_MODELS = ("qwen2.5-7b-instruct",)
 QUALITY_GUARDED_BASES = ("api.siliconflow.cn",)
+# 所有模式（智能/弱/中/强/顶级）均拒绝下列坏输出，并触发同档 peer 重试
 UNIVERSAL_QUALITY_FAILURES = {
     "empty_output",
     "chat_template_echo",
     "mojibake",
     "arithmetic_mismatch",
     "repeated_lines",
+    "prompt_echo",
+    "upstream_error_text",
+    "upstream_error_json",
+    "html_error_page",
+    "llm_reject",
+    "too_short",
+    "low_entropy",
+    "repeat_chunks",
 }
+
+# 上游常把 4xx/5xx 文案塞进 200 正文
+_UPSTREAM_ERROR_BODY = re.compile(
+    r"(?:"
+    r"rate\s*limit|too many requests|quota\s*(?:exceeded|exhausted)|"
+    r"capacity|overloaded|service\s*unavailable|internal\s*server\s*error|"
+    r"model\s*(?:is\s*)?(?:not\s*found|unavailable|does not exist)|"
+    r"invalid\s*api\s*key|unauthorized|permission\s*denied|access\s*denied|"
+    r"context\s*length|maximum\s*context|token\s*limit|"
+    r"无可用|额度不足|限流|负载已满|请求过于频繁|服务暂不可用|系统繁忙|"
+    r"currently\s*unavailable|try\s*again\s*later|bad\s*gateway|gateway\s*timeout"
+    r")",
+    re.IGNORECASE,
+)
+_ERROR_JSON_HINT = re.compile(
+    r"""(?x)
+    \{\s*["'](?:error|message|detail|code)["']\s*:
+    |["']error["']\s*:\s*\{
+    |["']type["']\s*:\s*["'](?:invalid_request_error|api_error|rate_limit_error)
+    """,
+    re.IGNORECASE,
+)
 
 
 class ComplexityRouterHook(CustomLogger):
@@ -269,6 +301,7 @@ class ComplexityRouterHook(CustomLogger):
             "classifier_fallback_to_heuristic": 0,
             "classifier_skipped_trivial": 0,
             "non_completion_skipped": 0,
+            "stream_forced_off": 0,
             "errors": 0,
         }
         # "限时优先"功能（v6）需要知道每个渠道的 rpm 上限和它对应的
@@ -568,10 +601,12 @@ class ComplexityRouterHook(CustomLogger):
         # 同池内多个 deployment 的 401/404 由 LiteLLM weighted failover + fallbacks 换 peer。
         # 敏感请求仍只走 trusted，不在此扩展。
         fallback_pools = {
-            FAST_POOL: (FAST_POOL, FREE_POOL, STRONG_POOL, ELITE_POOL),
-            FREE_POOL: (FREE_POOL, STRONG_POOL, ELITE_POOL, FAST_POOL),
-            STRONG_POOL: (STRONG_POOL, ELITE_POOL, FREE_POOL, FAST_POOL),
-            ELITE_POOL: (ELITE_POOL, STRONG_POOL, FREE_POOL, FAST_POOL),
+            FAST_POOL: (FAST_POOL, FREE_POOL, STRONG_POOL),
+            FREE_POOL: (FREE_POOL, STRONG_POOL),
+            # 强档是质量回退的终点，绝不能继续降到中/弱，也不反向升级顶级。
+            STRONG_POOL: (STRONG_POOL,),
+            # 顶级池的 peer 全部不可用后只降一次强档，到此为止。
+            ELITE_POOL: (ELITE_POOL, STRONG_POOL),
         }.get(pool, (pool,))
         required = ", ".join(sorted(requirements - {"text"})) or "text"
         had_candidates = False
@@ -586,8 +621,22 @@ class ComplexityRouterHook(CustomLogger):
                 continue
             had_candidates = True
             # 普通文本：交给 Router 在池内换 peer、再按 config fallbacks 跨池；
-            # 这里只保证「至少有一个已配置 Key 的池」作为入口。
+            # 但若该池所有渠道都在自定义长/短冷却中，就必须继续尝试下一档。
+            # 旧逻辑只看“是否配置了 Key”，会把 mode-elite 永远送进一个已被
+            # 全部冷却的 elite 池，最终直接 429/500，无法降到仍健康的强档。
             if requirements == {"text"}:
+                available = [
+                    channel for channel in candidates
+                    if await quota_manager.cooldown_remaining(
+                        str(channel["display_id"])
+                    ) <= 0
+                ]
+                if not available:
+                    logger.info(
+                        "[ai-gateway-matrix] %s 已配置渠道均在运行期冷却，改试下一档",
+                        candidate_pool,
+                    )
+                    continue
                 if candidate_pool != pool:
                     logger.info(
                         "[ai-gateway-matrix] %s 无已配置渠道，改走 %s（可用性优先）",
@@ -694,7 +743,12 @@ class ComplexityRouterHook(CustomLogger):
             return optimal_target
         return await self._resolve_capability_target(pool, requirements)
 
-    async def decide_pool_with_classifier(self, data: dict) -> str:
+    async def decide_pool_with_classifier(
+        self,
+        data: dict,
+        *,
+        preserve_pool: bool = False,
+    ) -> str:
         """智能模式主路径：强模型判强度 → 再选池作答。
 
         优先级：
@@ -705,6 +759,10 @@ class ComplexityRouterHook(CustomLogger):
           5. 分诊失败 → decide_pool() 启发式兜底
         """
         text = self._extract_text(data)
+        resolve_target = (
+            self._resolve_capability_target
+            if preserve_pool else self._resolve_pool_with_optimal
+        )
         requirements = (
             self._provider_registry.request_requirements(data)
             if self._provider_registry is not None else {"text"}
@@ -714,20 +772,20 @@ class ComplexityRouterHook(CustomLogger):
             return sensitive_target
 
         if not text:
-            return await self._resolve_pool_with_optimal(FAST_POOL, requirements)
+            return await resolve_target(FAST_POOL, requirements)
 
         text_lower = text.lower()
         quick_result = self._quick_escalation_check(text, text_lower)
         if quick_result is not None:
-            return await self._resolve_pool_with_optimal(quick_result, requirements)
+            return await resolve_target(quick_result, requirements)
 
         token_count = self._estimate_token_count(text)
         # 长度是硬约束，必须在只看前 2000 字符的外部分类器之前生效，
         # 避免长请求被截断样本误判成弱档。
         if token_count >= ELITE_TOKEN_THRESHOLD or len(text) >= ELITE_CHAR_THRESHOLD:
-            return await self._resolve_pool_with_optimal(ELITE_POOL, requirements)
+            return await resolve_target(ELITE_POOL, requirements)
         if token_count >= TOKEN_THRESHOLD or len(text) >= CHAR_THRESHOLD:
-            return await self._resolve_pool_with_optimal(STRONG_POOL, requirements)
+            return await resolve_target(STRONG_POOL, requirements)
         floor_pool = self._minimum_pool_for_text(text)
         if (
             token_count < FAST_TOKEN_THRESHOLD
@@ -739,19 +797,19 @@ class ComplexityRouterHook(CustomLogger):
                 "[ai-gateway-matrix] 明确简单短任务（%d tokens / %d 字符），跳过分类器直接走 fast-pool",
                 token_count, len(text),
             )
-            return await self._resolve_pool_with_optimal(FAST_POOL, requirements)
+            return await resolve_target(FAST_POOL, requirements)
 
         pool = await llm_classifier.classify_task(text)
         if pool is not None:
             self._stats["classifier_used"] += 1
             pool = self._higher_pool(pool, floor_pool)
-            return await self._resolve_pool_with_optimal(pool, requirements)
+            return await resolve_target(pool, requirements)
 
         # 分类器不可用/失败 → 回退到纯规则启发式（decide_pool 内部会重新走一遍
         # 敏感检测/关键词/正则/文件数/token 数判断；这里不重复造轮子）
         self._stats["classifier_fallback_to_heuristic"] += 1
         fallback_pool = self.decide_pool(data)
-        return await self._resolve_pool_with_optimal(fallback_pool, requirements)
+        return await resolve_target(fallback_pool, requirements)
 
     # ──────────────────────────────────────────────────────────────
     #  LiteLLM Hook 接口实现
@@ -795,13 +853,37 @@ class ComplexityRouterHook(CustomLogger):
             self._stats["non_completion_skipped"] += 1
             return data
 
+        # ── 强制非流式（闭环：完整正文 → 质检 → 不合格换家）────────
+        # 流式无法在吐字后干净换 peer；本网关一律非流式交付。
+        if data.get("stream") or data.get("stream_options") is not None:
+            self._stats["stream_forced_off"] = int(self._stats.get("stream_forced_off") or 0) + 1
+            logger.info(
+                "[ai-gateway-matrix] 强制 stream=false（原 stream=%s），启用质检换家",
+                data.get("stream"),
+            )
+        data["stream"] = False
+        data.pop("stream_options", None)
+
         requested_model = str(data.get("model") or "").strip()
 
-        # ── 模式解析：智能 / 弱 / 中 / 强 ─────────────────────────
+        response_format = data.get("response_format")
+        soft_json_object = (
+            isinstance(response_format, dict)
+            and response_format.get("type") == "json_object"
+        )
+        if soft_json_object:
+            # 标题、分类等短 JSON 任务不应让单个上游占满全局 120 秒。
+            # 该超时随请求进入 Router；失败后仍可在模型组内换 peer/fallback。
+            current_timeout = data.get("timeout")
+            if not isinstance(current_timeout, (int, float)) or current_timeout > 30:
+                data["timeout"] = 30
+
+        # ── 模式解析：智能 / 弱 / 中 / 强 / 顶级 ─────────────────
         # 智能 → 按提问选档；固定档 → 只使用该档（敏感仍强制 trusted）
         mode = self._resolve_client_mode(requested_model)
         if mode is None:
-            # 直连 deployment 或其它显式模型名：不改写
+            # 直连 deployment：仍强制非流式 + 质检，但不改写 model
+            data["_gwmatrix_quality"] = True
             return data
 
         requirements = (
@@ -821,7 +903,10 @@ class ComplexityRouterHook(CustomLogger):
             return data
 
         if mode == "intelligent":
-            target_pool = await self.decide_pool_with_classifier(data)
+            target_pool = await self.decide_pool_with_classifier(
+                data,
+                preserve_pool=soft_json_object,
+            )
         else:
             # 固定档位：仍做能力/配置解析与可用性跨档兜底
             forced = {
@@ -830,14 +915,20 @@ class ComplexityRouterHook(CustomLogger):
                 "strong": STRONG_POOL,
                 "elite": ELITE_POOL,
             }[mode]
-            target_pool = await self._resolve_pool_with_optimal(forced, requirements)
+            if soft_json_object:
+                target_pool = await self._resolve_capability_target(forced, requirements)
+            else:
+                target_pool = await self._resolve_pool_with_optimal(forced, requirements)
 
         data["model"] = target_pool
+        data["_gwmatrix_quality"] = True
+        data["_gwmatrix_mode"] = mode
+        data["_gwmatrix_pool"] = str(target_pool)
 
         if target_pool == TRUSTED_POOL:
             self._stats["routed_to_trusted_sensitive"] += 1
         elif str(target_pool).startswith("direct-"):
-            pass  # 限时优先命中
+            self._stats["routed_to_optimal"] = int(self._stats.get("routed_to_optimal") or 0) + 1
         elif target_pool == ELITE_POOL:
             self._stats["escalated_to_strong"] += 1  # 复用计数：顶级也算升档
         elif target_pool == STRONG_POOL:
@@ -848,7 +939,7 @@ class ComplexityRouterHook(CustomLogger):
             self._stats["routed_to_free"] += 1
 
         logger.info(
-            "[ai-gateway-matrix] 路由决策: %s (mode=%s) → %s (call_type=%s)",
+            "[ai-gateway-matrix] 路由决策: %s (mode=%s) → %s (call_type=%s, stream=false, quality=on)",
             requested_model, mode, target_pool, call_type,
         )
 
@@ -886,17 +977,18 @@ class ComplexityRouterHook(CustomLogger):
                     display_id,
                     remaining,
                 )
-                raise RuntimeError("channel_cooldown_active")
-
-            # Gemini 2.5 Pro 当前账号明确返回 free-tier limit: 0。LiteLLM 在
-            # Router 最终回退成功时不会把中间 deployment 的失败交给自定义
-            # failure logger，因此采用“先熔断、成功再清除”的探测租约：
-            # 冷却到期只放行一次；成功回调会 mark_success，失败则保留 24h。
-            if "gemini-2.5-pro" in model:
-                await quota_manager.mark_failure(display_id, "quota_probe")
+                provider_name = model.split("/", 1)[0] if "/" in model else "custom"
+                # RuntimeError 会被 LiteLLM Proxy 映射成 HTTP 500，并可能中止
+                # fallback；RateLimitError 才表示“当前 deployment 暂不可用，
+                # 请换 peer”。最终耗尽时也应返回 429，而不是泄漏内部 500。
+                raise litellm.RateLimitError(
+                    message="channel_cooldown_active",
+                    llm_provider=provider_name,
+                    model=model or "unknown",
+                )
 
         if "gemini-3.5-flash" in model:
-            # Gemini 3.5 Flash 默认会思考。中档日常任务用最小思考，且给最终答案
+            # Gemini 3.5 Flash 默认会思考。强档任务用最小思考，且给最终答案
             # 留出足够预算；温度低于 1 会触发官方/LiteLLM 的退化警告。
             params["reasoning_effort"] = "minimal"
             # 使用模型默认温度；Gemini 3+ 已把显式采样参数标为弃用。
@@ -944,16 +1036,51 @@ class ComplexityRouterHook(CustomLogger):
 
     @staticmethod
     def _quality_failure_reason(prompt: str, output: str) -> Optional[str]:
-        """识别确定性较高的模板泄漏、乱码和复读，不评价回答观点。"""
+        """识别确定性较高的坏输出：空、乱码、模板泄漏、上游报错、复读。
+
+        适用于智能 / 弱 / 中 / 强 / 顶级所有入口；不评价观点对错。
+        """
         stripped = output.strip()
         if not stripped:
             return "empty_output"
         lowered = stripped.lower()
-        role_markers = ("<|im_start|>", "<|im_end|>", "<|assistant|>", "\nuser\n", "\nassistant\n")
-        if any(marker in lowered for marker in role_markers):
+        role_markers = (
+            "<|im_start|>", "<|im_end|>", "<|assistant|>", "<|user|>",
+            "\nuser\n", "\nassistant\n", "[INST]", "[/INST]",
+        )
+        if any(marker in lowered or marker in stripped for marker in role_markers):
             return "chat_template_echo"
-        if "�" in stripped or any(ord(ch) < 32 and ch not in "\n\r\t" for ch in stripped):
+        # 替换符 / 控制字符 / 明显坏编码
+        if "�" in stripped:
             return "mojibake"
+        if any(ord(ch) < 32 and ch not in "\n\r\t" for ch in stripped):
+            return "mojibake"
+        # 高比例私用区/不可见字符（部分小模型乱码）
+        if len(stripped) >= 20:
+            weird = sum(
+                1 for ch in stripped
+                if (0xE000 <= ord(ch) <= 0xF8FF) or (0xFFF0 <= ord(ch) <= 0xFFFF)
+            )
+            if weird / len(stripped) >= 0.08:
+                return "mojibake"
+        # HTML 错误页
+        if re.search(r"(?i)<!doctype\s+html|<html[\s>]|cloudflare|bad gateway|502 bad", stripped[:800]):
+            return "html_error_page"
+        # JSON 错误体 / 上游把 4xx 塞进 200
+        if len(stripped) < 1200 and _ERROR_JSON_HINT.search(stripped):
+            if _UPSTREAM_ERROR_BODY.search(stripped) or re.search(
+                r"(?i)\"(?:code|status)\"\s*:\s*(?:4\d\d|5\d\d)", stripped
+            ):
+                return "upstream_error_json"
+        if len(stripped) < 600 and _UPSTREAM_ERROR_BODY.search(stripped):
+            # 避免把正常讲解「rate limit 是什么」的长文误杀：短且像报错
+            if len(stripped) < 280 or stripped.count("\n") <= 3:
+                return "upstream_error_text"
+        # 字符熵极低的复读垃圾
+        if len(stripped) >= 40:
+            unique = len(set(stripped))
+            if unique <= 4:
+                return "low_entropy"
         # 只校验题面可无歧义算出的简单加减应用题，不对一般语义回答评分。
         arithmetic = re.search(
             r"有\s*(\d+)\s*个?.*?送出\s*(\d+)\s*个?.*?(?:又|再)?买(?:了)?\s*(\d+)\s*个?",
@@ -964,14 +1091,23 @@ class ComplexityRouterHook(CustomLogger):
             expected = int(arithmetic.group(1)) - int(arithmetic.group(2)) + int(arithmetic.group(3))
             if not re.search(rf"(?<!\d){expected}(?!\d)", stripped):
                 return "arithmetic_mismatch"
-        # 纯数字四则表达式同样可以确定性校验。只接受数字和受限运算符，
-        # 使用 AST 白名单计算，绝不 eval 用户输入。
-        if re.search(r"(?:等于|计算|结果|多少|what\s+is|=)", prompt, re.I):
+        # 纯数字四则表达式同样可以确定性校验，但只允许“短小、明确、以算式
+        # 为主体”的请求进入。小说评分/分类 prompt 常含“每项 0-10 分”和
+        # “输出结果”；旧逻辑会把其中的 0-10 当成算术题，期待答案 -10，
+        # 从而把正常 JSON 响应误判为 arithmetic_mismatch。
+        arithmetic_request = (
+            len(prompt) <= 240
+            and not re.search(r"(?:评分|分数|满分|权重|区间|范围|等级|每项)", prompt)
+            and re.search(r"(?:等于多少|是多少|计算|算一下|求值|what\s+is)", prompt, re.I)
+        )
+        if arithmetic_request:
             expression = re.search(
                 r"(?<![\w.])(\d+(?:\.\d+)?(?:\s*(?:\*\*|//|[+\-*/%])\s*\d+(?:\.\d+)?)+)",
                 prompt,
             )
-            if expression:
+            # 算式必须位于问题开头附近；正文/规则中偶然出现的范围或公式
+            # 不能拿来验证整个回答。
+            if expression and expression.start() <= 24:
                 try:
                     tree = ast.parse(expression.group(1), mode="eval")
 
@@ -1013,44 +1149,95 @@ class ComplexityRouterHook(CustomLogger):
             return "repeated_lines"
         return None
 
-    async def async_post_call_success_deployment_hook(
-        self, request_data: dict, response: Any, call_type: Any
-    ) -> Optional[Any]:
-        """把明显坏输出转换为 deployment 失败，让 LiteLLM 尝试同档 peer。"""
-        params = self._deployment_params(request_data)
-        # 流式响应在此阶段尚未形成完整正文，不能做内容质量判断。
-        if params.get("stream") or request_data.get("stream"):
-            return response
-        model = str(params.get("model") or "").lower()
-        api_base = str(params.get("api_base") or "").lower()
-        guarded = any(name in model for name in QUALITY_GUARDED_MODELS) and any(
-            base in api_base for base in QUALITY_GUARDED_BASES
-        )
+    async def _evaluate_response_quality(
+        self, request_data: dict, response: Any
+    ) -> Optional[str]:
+        """统一质检：智能/弱/中/强/顶级 共用。返回失败原因或 None。"""
+        if self._response_has_tool_call(response):
+            # 有 tool_calls 时 content 为空是合法的
+            output = self._response_text(response)
+            if not output.strip():
+                return None
         output = self._response_text(response)
+        prompt = self._last_user_text(request_data)
         if not output.strip():
-            if self._response_has_tool_call(response):
-                return response
-            # 空正文对所有普通文本模型都无效，而不仅是已知不稳定的小模型。
-            reason = "empty_output"
-        else:
-            reason = self._quality_failure_reason(
-                self._last_user_text(request_data), output
+            return "empty_output"
+        reason = self._quality_failure_reason(prompt, output)
+        if reason is not None:
+            return reason
+        # 本地硬规则未命中：hybrid/dedicated 再对可疑输出用智脑短检
+        mode = answer_verifier.verify_mode()
+        if mode in {"off", "local"}:
+            # local 模式：仍把 soft_suspect 里高置信的当硬失败
+            suspect = answer_verifier.soft_suspect(prompt, output)
+            if suspect in {"upstream_error_text", "low_entropy", "repeat_chunks"}:
+                return suspect
+            return None
+        force_sample = False
+        try:
+            import random
+            rate = float(os.environ.get("ANSWER_VERIFY_SAMPLE_RATE") or "0")
+            display_id_probe = self._extract_display_id_from_request(request_data)
+            channel = (
+                self._channel_registry.get(display_id_probe or "")
+                if display_id_probe else None
             )
-        if reason is None or (
-            not guarded and reason not in UNIVERSAL_QUALITY_FAILURES
-        ):
-            return response
-        if reason is None:
-            return response
+            trust = str((channel or {}).get("trust") or "")
+            # 观察期/中转站 + 所有固定档/智能档统一更积极抽检
+            if trust in {"observation", "relay"} and rate <= 0:
+                rate = 0.12
+            force_sample = rate > 0 and random.random() < min(1.0, rate)
+        except Exception:
+            force_sample = False
+        llm_reason = await answer_verifier.should_reject_with_llm(
+            prompt, output, force_sample=force_sample,
+        )
+        if llm_reason:
+            return llm_reason if llm_reason in UNIVERSAL_QUALITY_FAILURES else "llm_reject"
+        return None
+
+    async def _reject_bad_response(
+        self, request_data: dict, reason: str, *, count_usage: bool = False
+    ) -> None:
+        """标记坏输出并抛错，让 Router 换同档 peer（所有模式通用）。"""
+        if count_usage:
+            # 流式结束后才发现坏内容：已记过用量则不再记
+            pass
         display_id = self._extract_display_id_from_request(request_data)
-        if display_id:
+        # arithmetic / 单次过短：只重试本次，不长冷却
+        if display_id and reason not in {
+            "arithmetic_mismatch", "llm_reject", "too_short",
+        }:
             await quota_manager.mark_failure(display_id, "quality_error")
+        self._stats["errors"] = int(self._stats.get("errors") or 0) + 1
         logger.warning(
-            "[ai-gateway-matrix] 渠道输出质量校验失败（渠道=%s，原因=%s），切换同档 peer",
+            "[ai-gateway-matrix] 输出质检失败（渠道=%s，原因=%s），切换同档 peer",
             display_id or "unknown",
             reason,
         )
         raise RuntimeError(f"response_quality_error:{reason}")
+
+    async def async_post_call_success_deployment_hook(
+        self, request_data: dict, response: Any, call_type: Any
+    ) -> Optional[Any]:
+        """非流式成功后立刻质检；坏输出 → 抛错换同档 peer。
+
+        智能 / mode-weak / mid / strong / elite / 直连 全部走此路径。
+        pre_call 已强制 stream=false，此处不再放行流式半成品。
+        """
+        # 二次保险：任何漏网的 stream 仍不跳过质检（无正文则当 empty）
+        params = self._deployment_params(request_data)
+        if params.get("stream") or request_data.get("stream"):
+            params["stream"] = False
+            request_data["stream"] = False
+
+        # LiteLLM Proxy 路径上 deployment 成功钩子稳定执行，在此落账
+        await self._record_success_usage(request_data, response)
+        reason = await self._evaluate_response_quality(request_data, response)
+        if reason is None:
+            return response
+        await self._reject_bad_response(request_data, reason)
+        return response  # pragma: no cover
 
     @staticmethod
     def _resolve_client_mode(requested_model: str) -> Optional[str]:
@@ -1086,7 +1273,15 @@ class ComplexityRouterHook(CustomLogger):
             return None
         api_base = litellm_params.get("api_base")
         api_key = litellm_params.get("api_key")
-        return usage_tracker.make_channel_id(model, api_base, api_key)
+        # 尽量挂上 env，走凭据级共用账本
+        env_var = None
+        display_id = self._extract_display_id(kwargs)
+        ch = self._channel_registry.get(display_id or "") if display_id else None
+        if ch:
+            env_var = ch.get("env_var")
+        return usage_tracker.make_usage_key(
+            str(model), api_base, api_key, env_var=env_var,
+        )
 
     def _extract_display_id(self, kwargs: dict) -> Optional[str]:
         """将 LiteLLM 已选中的 deployment 反查回不含密钥的稳定标识。"""
@@ -1132,6 +1327,166 @@ class ComplexityRouterHook(CustomLogger):
                     return channel["display_id"]
         return None
 
+    def _failure_display_ids(
+        self,
+        request_data: dict,
+        error: Any,
+        error_class: str,
+    ) -> list[str]:
+        """从 Router 请求和实际异常中反查应该冷却的渠道。
+
+        请求级失败钩子里的 ``request_data[model]`` 经常仍是
+        ``elite-model-pool``，但 LiteLLM 异常对象保留了实际 deployment 的
+        ``model`` / ``llm_provider``。额度和鉴权错误通常属于整个凭据，因此
+        命中实际模型后扩展到使用同一 env_var 的所有模型。
+        """
+        found: set[str] = set()
+        request_match = self._extract_display_id_from_request(request_data)
+        if request_match:
+            found.add(request_match)
+
+        providers: set[str] = set()
+        current = error
+        seen: set[int] = set()
+        for _ in range(4):
+            if current is None or id(current) in seen:
+                break
+            seen.add(id(current))
+            actual_model = str(getattr(current, "model", "") or "").strip()
+            actual_provider = str(
+                getattr(current, "llm_provider", "")
+                or getattr(current, "custom_llm_provider", "")
+                or ""
+            ).strip().lower()
+            if actual_provider:
+                providers.add(actual_provider)
+            if actual_model and actual_model not in ALL_CAPABILITY_POOLS:
+                matched = self._extract_display_id({"model": actual_model})
+                if matched:
+                    found.add(matched)
+            current = getattr(current, "__cause__", None) or getattr(
+                current, "__context__", None
+            )
+
+        credential_scoped = error_class in {
+            "auth_error", "quota_zero", "quota_error",
+        }
+        if credential_scoped and found:
+            env_vars = {
+                str(self._channel_registry[item].get("env_var") or "")
+                for item in found
+                if item in self._channel_registry
+            }
+            found.update(
+                str(channel["display_id"])
+                for channel in self._channel_registry.values()
+                if str(channel.get("env_var") or "") in env_vars
+                and str(channel.get("env_var") or "")
+            )
+        elif credential_scoped and providers:
+            # 只有异常没有实际 model 时才按明确的原生 provider 兜底；openai
+            # 是大量兼容端点的协议名，不能据此冻结所有 OpenAI-compatible 渠道。
+            native_providers = providers - {"openai", "custom"}
+            found.update(
+                str(channel["display_id"])
+                for channel in self._channel_registry.values()
+                if str(channel.get("model") or "").split("/", 1)[0].lower()
+                in native_providers
+            )
+        return sorted(found)
+
+    @staticmethod
+    def _response_usage_value(usage: Any, name: str) -> int:
+        if isinstance(usage, dict):
+            value = usage.get(name, 0)
+        else:
+            value = getattr(usage, name, 0) if usage is not None else 0
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def _resolved_usage_channel_id(self, kwargs: dict) -> Optional[str]:
+        """优先从注册表构造与 Dashboard 一致的 usage key（同 Key 共用）。"""
+        display_id = self._extract_display_id_from_request(kwargs)
+        channel = self._channel_registry.get(display_id or "")
+        if channel is not None:
+            env_var = str(channel.get("env_var") or "") or None
+            env_value = os.environ.get(env_var or "", "") if env_var else ""
+            return usage_tracker.make_usage_key(
+                str(channel.get("model") or ""),
+                channel.get("api_base"),
+                env_value or None,
+                env_var=env_var,
+            )
+        return self._extract_channel_id(kwargs)
+
+    async def _record_success_usage(
+        self,
+        kwargs: dict,
+        response_obj: Any,
+        start_time: Any = None,
+        end_time: Any = None,
+    ) -> None:
+        """从实际 deployment 响应记账；可由 deployment/logging 两种钩子安全复用。"""
+        channel_id = self._resolved_usage_channel_id(kwargs)
+        if not channel_id:
+            logger.warning("[ai-gateway-matrix] 成功请求无法解析实际渠道，跳过 token 记账")
+            return
+        display_id = self._extract_display_id_from_request(kwargs)
+
+        usage = getattr(response_obj, "usage", None)
+        if usage is None and isinstance(response_obj, dict):
+            usage = response_obj.get("usage")
+        prompt_tokens = self._response_usage_value(usage, "prompt_tokens")
+        completion_tokens = self._response_usage_value(usage, "completion_tokens")
+        if prompt_tokens + completion_tokens <= 0:
+            text_len = len(self._extract_text(kwargs))
+            prompt_tokens = max(1, text_len // 4)
+            completion_tokens = 1
+
+        params = self._deployment_params(kwargs)
+        cost: Optional[float] = None
+        cost_source = "unknown"
+        try:
+            cost, cost_source = pricing.compute_cost(
+                str(params.get("model") or ""),
+                response_obj,
+                prompt_tokens,
+                completion_tokens,
+                api_base=params.get("api_base"),
+            )
+        except Exception as exc:
+            logger.debug("[ai-gateway-matrix] 花费计算失败（token 仍会记账）: %s", exc)
+
+        latency_ms: Optional[float] = None
+        try:
+            if start_time is not None and end_time is not None:
+                delta = end_time - start_time
+                latency_ms = (
+                    float(delta.total_seconds() * 1000)
+                    if hasattr(delta, "total_seconds") else None
+                )
+        except Exception:
+            pass
+
+        response_id = getattr(response_obj, "id", None)
+        if response_id is None and isinstance(response_obj, dict):
+            response_id = response_obj.get("id")
+        event_id = response_id or kwargs.get("litellm_call_id")
+        await usage_tracker.record_call(
+            channel_id,
+            success=True,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cost=cost,
+            cost_source=cost_source,
+            latency_ms=latency_ms,
+            event_id=str(event_id) if event_id else None,
+        )
+        if display_id:
+            await quota_manager.mark_success(display_id)
+
     async def async_log_success_event(self, kwargs: dict, response_obj: Any, start_time: Any, end_time: Any) -> None:
         """请求成功后记一笔用量——只做统计，任何异常都不应该往外抛。
 
@@ -1141,61 +1496,39 @@ class ComplexityRouterHook(CustomLogger):
         再交给 usage_tracker 存起来——任何一步失败都不应该影响真实请求
         已经成功返回这件事，所以整段包在 try/except 里。
         """
-        channel_id = self._extract_channel_id(kwargs)
-        if not channel_id:
-            return
-        display_id = self._extract_display_id(kwargs)
-
-        prompt_tokens = 0
-        completion_tokens = 0
-        cost: Optional[float] = None
-        cost_source = "unknown"
-        latency_ms: Optional[float] = None
         try:
-            usage = getattr(response_obj, "usage", None)
-            if usage is not None:
-                prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
-                completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
-            # 部分上游成功但不回 usage：用消息长度粗估，避免统计永远为 0
-            if prompt_tokens + completion_tokens <= 0:
-                messages = kwargs.get("messages") or []
-                if not messages:
-                    lp = kwargs.get("litellm_params") or {}
-                    messages = lp.get("messages") or []
-                text_len = 0
-                for m in messages:
-                    if isinstance(m, dict):
-                        c = m.get("content")
-                        if isinstance(c, str):
-                            text_len += len(c)
-                        elif isinstance(c, list):
-                            for part in c:
-                                if isinstance(part, dict) and isinstance(part.get("text"), str):
-                                    text_len += len(part["text"])
-                prompt_tokens = max(1, text_len // 4)
-                completion_tokens = max(1, 1)
-            params = kwargs.get("litellm_params") or {}
-            model = params.get("model", "")
-            cost, cost_source = pricing.compute_cost(
-                model,
-                response_obj,
-                prompt_tokens,
-                completion_tokens,
-                api_base=params.get("api_base"),
+            await self._record_success_usage(
+                kwargs, response_obj, start_time=start_time, end_time=end_time,
             )
-            if start_time is not None and end_time is not None:
-                delta = end_time - start_time
-                latency_ms = float(delta.total_seconds() * 1000) if hasattr(delta, "total_seconds") else None
         except Exception as exc:
-            logger.debug("[ai-gateway-matrix] 提取 token/花费信息失败（不影响请求本身）: %s", exc)
-
-        await usage_tracker.record_call(
-            channel_id, success=True,
-            prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
-            cost=cost, cost_source=cost_source, latency_ms=latency_ms,
-        )
-        if display_id:
-            await quota_manager.mark_success(display_id)
+            logger.warning("[ai-gateway-matrix] 成功请求 token 记账失败: %s", type(exc).__name__)
+        # 流式请求：deployment 钩子时常还没有正文。流结束后在此做一次质检，
+        # 坏输出至少冷却渠道（响应可能已部分到达客户端，无法再换 peer）。
+        try:
+            is_stream = bool(
+                (kwargs.get("litellm_params") or {}).get("stream")
+                or kwargs.get("stream")
+            )
+            if not is_stream:
+                return
+            text = self._response_text(response_obj)
+            if not text.strip():
+                return
+            reason = await self._evaluate_response_quality(kwargs, response_obj)
+            if reason is None:
+                return
+            display_id = self._extract_display_id_from_request(kwargs)
+            if display_id and reason not in {
+                "arithmetic_mismatch", "llm_reject", "too_short",
+            }:
+                await quota_manager.mark_failure(display_id, "quality_error")
+            logger.warning(
+                "[ai-gateway-matrix] 流式结束后质检失败（渠道=%s，原因=%s），已冷却",
+                display_id or "unknown",
+                reason,
+            )
+        except Exception as exc:
+            logger.debug("[ai-gateway-matrix] 流式质检跳过: %s", type(exc).__name__)
 
     async def async_log_failure_event(self, kwargs: dict, response_obj: Any, start_time: Any, end_time: Any) -> None:
         """请求失败也记一笔（失败也占用了渠道的 RPM 配额，仪表盘应该看得到）。
@@ -1216,19 +1549,21 @@ class ComplexityRouterHook(CustomLogger):
             await usage_tracker.record_call(
                 channel_id, success=False, latency_ms=latency_ms, error_class=error_class
             )
-        display_id = self._extract_display_id(kwargs)
-        if display_id:
-            # 模型改名/不存在：短冷却即可，留给 autofix；勿按 auth 长冷冻
-            fail_class = "rate_limit" if error_class in {"unknown"} and (
-                "model" in str(error or "").lower()
-            ) else error_class
-            try:
-                from gateway.model_autofix import is_model_name_error
-                if is_model_name_error(str(error or "")):
-                    fail_class = "rate_limit"
-            except Exception:
-                pass
-            await quota_manager.mark_failure(display_id, fail_class)
+        # 模型改名/不存在：短冷却即可，留给 autofix；勿按 auth 长冷冻。
+        fail_class = "rate_limit" if error_class in {"unknown"} and (
+            "model" in str(error or "").lower()
+        ) else error_class
+        try:
+            from gateway.model_autofix import is_model_name_error
+            if is_model_name_error(str(error or "")):
+                fail_class = "rate_limit"
+        except Exception:
+            pass
+        # 自己抛出的冷却信号和 Router 全部耗尽是派生状态，不是一次新的
+        # deployment 失败；重复写回会让短冷却不断自续期。
+        if fail_class not in {"cooldown_active", "router_exhausted"}:
+            for display_id in self._failure_display_ids(kwargs, error, fail_class):
+                await quota_manager.mark_failure(display_id, fail_class)
 
         # 免费模型改名自愈：异步尝试 /models + 强模型裁决 + 写 config
         try:
@@ -1333,9 +1668,11 @@ class ComplexityRouterHook(CustomLogger):
         # LiteLLM 的 deployment 日志回调不会覆盖所有“直连模型最终失败”路径。
         # 在请求级失败钩子再兜底一次；direct-* 可稳定反查到真实渠道，确保
         # 限时优先模型的 429/401 同样进入运行期冷却。
-        display_id = self._extract_display_id_from_request(request_data)
-        if display_id and error_class not in {"cooldown_active", "router_exhausted"}:
-            await quota_manager.mark_failure(display_id, error_class)
+        if error_class not in {"cooldown_active", "router_exhausted"}:
+            for display_id in self._failure_display_ids(
+                request_data, original_exception, error_class,
+            ):
+                await quota_manager.mark_failure(display_id, error_class)
 
         # 上游错误有时会回显 URL、请求片段或鉴权信息，日志只保留
         # 异常类型和脱敏分类，不记录 str(original_exception) 原文。

@@ -248,7 +248,8 @@ async def fetch_moonshot(api_key: str) -> dict[str, Any]:
     }
 
 
-# env_var → fetcher
+# env_var → fetcher（账号级 Key；同 env 多模型共用一次查询）
+# 仅登记有公开、可用 Bearer Key 查询的官方余额/积分接口。
 _FETCHERS = {
     "DEEPSEEK_API_KEY": fetch_deepseek,
     "OPENROUTER_API_KEY": fetch_openrouter,
@@ -256,9 +257,21 @@ _FETCHERS = {
     "MOONSHOT_API_KEY": fetch_moonshot,
 }
 
+def _resolve_fetcher(env_var: Optional[str]):
+    if not env_var:
+        return None
+    if env_var in _FETCHERS:
+        return _FETCHERS[env_var]
+    # FOO_API_KEY_2 → FOO_API_KEY
+    import re
+    m = re.match(r"^(.*)_(\d+)$", env_var)
+    if m and m.group(1) in _FETCHERS:
+        return _FETCHERS[m.group(1)]
+    return None
+
 
 def supports_official_balance(env_var: Optional[str]) -> bool:
-    return bool(env_var and env_var in _FETCHERS)
+    return _resolve_fetcher(env_var) is not None
 
 
 async def fetch_balance_for_channel(channel: dict) -> dict[str, Any]:
@@ -289,26 +302,59 @@ async def fetch_balance_for_channel(channel: dict) -> dict[str, Any]:
         base["message"] = "未配置 Key，无法查询余额"
         return base
 
+    # 按 token × 单价估算（无官方余额 / 账本未记金额时补齐）
+    try:
+        from gateway import pricing
+
+        est = pricing.estimate_usage_spend(
+            str(channel.get("model") or ""),
+            usage,
+            api_base=channel.get("api_base"),
+        )
+        base["token_pricing"] = est
+        if local_spend.get("day_cost") is None and est.get("day_cost") is not None:
+            local_spend["day_cost"] = est["day_cost"]
+            local_spend["cost_source"] = est.get("cost_source") or "estimated"
+        if local_spend.get("total_cost") is None and est.get("total_cost") is not None:
+            local_spend["total_cost"] = est["total_cost"]
+            local_spend["cost_source"] = est.get("cost_source") or "estimated"
+        base["local_spend"] = local_spend
+    except Exception as exc:
+        logger.debug("token 计价跳过 %s: %s", env_var, type(exc).__name__)
+        base["token_pricing"] = None
+
     # 本机消耗摘要（所有渠道）
     if local_spend.get("available") and (
         local_spend.get("day_cost") is not None or local_spend.get("total_cost") is not None
     ):
-        approx = "~" if local_spend.get("cost_source") == "estimated" else ""
+        approx = "~" if local_spend.get("cost_source") in {
+            "estimated", "size_band",
+        } else ""
         day = local_spend.get("day_cost")
         tot = local_spend.get("total_cost")
+        price_hint = ""
+        tp = base.get("token_pricing") or {}
+        if tp.get("price_label"):
+            price_hint = f" · {tp['price_label']}"
         base["local_spend_summary_zh"] = (
-            f"本机统计：今日 {approx}${day if day is not None else '—'} · "
-            f"累计 {approx}${tot if tot is not None else '—'}"
+            f"本机按 token 计价：今日 {approx}${day if day is not None else '—'} · "
+            f"累计 {approx}${tot if tot is not None else '—'}{price_hint}"
         )
 
-    fetcher = _FETCHERS.get(env_var)
+    fetcher = _resolve_fetcher(env_var)
     if not fetcher:
-        if channel.get("billing") == "paid":
-            base["message"] = (
-                "该按量渠道暂无对接官方余额接口；请看本机消耗统计或厂商控制台。"
-            )
+        billing = channel.get("billing") or ""
+        if billing in {"paid", "trial", "free_plus_paid"}:
+            if local_spend.get("day_cost") is not None or local_spend.get("total_cost") is not None:
+                base["message"] = (
+                    "无官方余额接口；已按模型单价 × 本机 token 估算消耗（价格有缓存）。"
+                )
+            else:
+                base["message"] = (
+                    "无官方余额接口，且尚无 token 用量可计价；完整账单请看厂商控制台。"
+                )
         else:
-            base["message"] = "免费/试用层以 RPM·RPD 等限额表为主；本机有消耗时显示估算花费。"
+            base["message"] = "免费/试用层以限额为主；有用量时按模型规模估算市场等值花费。"
         return base
 
     cache_key = f"{env_var}:{(channel.get('masked_key') or '')}"

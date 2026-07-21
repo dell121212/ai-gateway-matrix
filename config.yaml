@@ -942,7 +942,8 @@ router_settings:
   # 同池多 deployment：某一个 401/404/429 先换 peer，不要整池报死
   enable_weighted_failover: true
   # 单个 deployment 最多重试一次；失败后尽快换 peer，再走跨池 fallbacks。
-  num_retries: 1
+  # 质检失败/上游错误：同池换 peer 最多约 3 次
+  num_retries: 3
   max_fallbacks: 8
   # 冷却要短：智谱 GLM 等免费层「访问量过大」是常态、过一会又能用。
   # 一次 429 只短暂让出（秒级），下次请求仍应再试，绝不能「失败一次就长期不用」。
@@ -1001,7 +1002,8 @@ litellm_settings:
   # 返回一个“看似成功、实际协议已被破坏”的普通文本响应。
   drop_params: false
   request_timeout: 120
-  num_retries: 1
+  # 与 router 分层：避免与 router_settings.num_retries 叠成重试风暴
+  num_retries: 0
 
 general_settings:
   master_key: os.environ/GATEWAY_MASTER_KEY

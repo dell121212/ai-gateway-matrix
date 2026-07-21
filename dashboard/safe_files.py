@@ -77,6 +77,7 @@ def safe_rewrite(
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = _mkstemp_writable(path)
     temp_path = Path(temp_name)
+    replaced = False
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as temp:
             temp.write(content)
@@ -85,7 +86,6 @@ def safe_rewrite(
         os.chmod(temp_path, mode)
         if validator is not None:
             validator(temp_path)
-        replaced = False
         try:
             os.replace(temp_path, path)
             replaced = True  # 临时文件已不存在

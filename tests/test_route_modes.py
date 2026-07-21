@@ -30,6 +30,9 @@ class FakeRegistry:
         return self.pools.get(pool, [])
 
     def request_requirements(self, data: dict) -> set[str]:
+        response_format = data.get("response_format") or {}
+        if response_format.get("type") == "json_schema":
+            return {"text", "json_schema"}
         return {"text"}
 
     def security_text(self, data: dict) -> str:
@@ -75,7 +78,7 @@ class RouteModeTests(unittest.TestCase):
 
     def test_forced_weak_falls_up_when_empty(self):
         os.environ["ONLY_STRONG"] = "fixture-key"
-        strong = {"env_var": "ONLY_STRONG", "direct_model_name": "direct-strong"}
+        strong = {"display_id": "only-strong", "env_var": "ONLY_STRONG", "direct_model_name": "direct-strong"}
         hook = _hook(FakeRegistry({STRONG_POOL: [strong]}))
 
         async def run():
@@ -86,8 +89,8 @@ class RouteModeTests(unittest.TestCase):
         target = asyncio.run(run())
         self.assertEqual(target, STRONG_POOL)
 
-    def test_forced_strong_falls_to_free_when_no_strong_key(self):
-        """可用性优先：强档无 Key 时允许落到已配置的免费档，不整次失败。"""
+    def test_forced_strong_stops_when_no_strong_key(self):
+        """强档是终点，无 Key 时不能继续降到中档。"""
         os.environ["ONLY_FREE"] = "fixture-key"
         free = {"env_var": "ONLY_FREE", "direct_model_name": "direct-free"}
         hook = _hook(FakeRegistry({FREE_POOL: [free]}))
@@ -97,8 +100,26 @@ class RouteModeTests(unittest.TestCase):
             out = await hook.async_pre_call_hook(None, None, data, "acompletion")
             return out["model"]
 
-        target = asyncio.run(run())
-        self.assertEqual(target, FREE_POOL)
+        with self.assertRaises(RuntimeError):
+            asyncio.run(run())
+
+    def test_json_object_keeps_pool_fallback_and_sets_short_timeout(self):
+        os.environ["ONLY_STRONG"] = "fixture-key"
+        strong = {"display_id": "only-strong", "env_var": "ONLY_STRONG", "direct_model_name": "direct-strong"}
+        hook = _hook(FakeRegistry({STRONG_POOL: [strong]}))
+
+        async def run():
+            data = {
+                "model": "mode-strong",
+                "messages": [{"role": "user", "content": "return json"}],
+                "response_format": {"type": "json_object"},
+            }
+            return await hook.async_pre_call_hook(None, None, data, "acompletion")
+
+        result = asyncio.run(run())
+
+        self.assertEqual(result["model"], STRONG_POOL)
+        self.assertEqual(result["timeout"], 30)
 
     def test_no_keys_anywhere_still_errors(self):
         hook = _hook(FakeRegistry({}))

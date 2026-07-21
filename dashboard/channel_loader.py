@@ -17,7 +17,14 @@ from typing import Optional
 
 import yaml
 
-from gateway import channel_ids, env_file, priority_overrides, provider_registry, usage_tracker
+from gateway import (
+    channel_ids,
+    env_file,
+    priority_overrides,
+    provider_registry,
+    tier_overrides,
+    usage_tracker,
+)
 from .provider_catalog import (
     account_index_from_env,
     company_id_from_env,
@@ -114,6 +121,22 @@ def write_env_var(key: str, value: str, env_path: Path = ENV_PATH) -> None:
         safe_rewrite(env_path, "\n".join(new_lines) + "\n", mode=0o600)
 
 
+def delete_env_var(key: str, env_path: Path = ENV_PATH) -> bool:
+    """删除一个不再被渠道使用的上游 Key。"""
+    if not re.fullmatch(r"[A-Z][A-Z0-9_]*", key or ""):
+        raise ValueError("环境变量名不合法")
+    with locked_file(env_path):
+        if not env_path.exists():
+            return False
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+        pattern = re.compile(rf"^{re.escape(key)}\s*=")
+        kept = [line for line in lines if not pattern.match(line)]
+        if len(kept) == len(lines):
+            return False
+        safe_rewrite(env_path, "\n".join(kept) + ("\n" if kept else ""), mode=0o600)
+        return True
+
+
 def load_channels(config_path: Path = CONFIG_PATH, env_path: Path = ENV_PATH) -> list[dict]:
     """解析 config.yaml，把每个 deployment 转成前端需要的渠道结构。
 
@@ -155,6 +178,10 @@ def load_channels(config_path: Path = CONFIG_PATH, env_path: Path = ENV_PATH) ->
         model = params.get("model", "unknown")
         api_base = params.get("api_base")
         env_var = parse_env_var_ref(params.get("api_key"))
+        # 用户在仪表盘自选的档位优先于 config 默认池
+        overridden = tier_overrides.get_pool(model, api_base, env_var)
+        if overridden and overridden in TIER_LABELS:
+            pool = overridden
 
         # 展示/API 用的稳定主键：用 model+api_base+env_var 三元组，
         # 不依赖是否已经配置了真实 key、也不会在重启前后发生变化。
@@ -171,6 +198,14 @@ def load_channels(config_path: Path = CONFIG_PATH, env_path: Path = ENV_PATH) ->
         info = get_provider_info(env_var) if env_var else {
             "name": model, "signup_url": "", "trust": "third_party", "note": "",
         }
+        model_info = m.get("model_info") or {}
+        custom_provider_name = str(model_info.get("custom_provider_name") or "").strip()
+        if custom_provider_name:
+            info = dict(info)
+            info["name"] = custom_provider_name
+            info["billing"] = str(model_info.get("billing") or "free")
+            info["pricing_label_zh"] = "自定义免费 API"
+            info["how_free_zh"] = "由用户在本机面板添加；额度与条款以该 API 提供方为准。"
         configured_value = env_values.get(env_var, "") if env_var else ""
         try:
             from gateway.runtime_launcher import _is_placeholder_credential
@@ -179,12 +214,15 @@ def load_channels(config_path: Path = CONFIG_PATH, env_path: Path = ENV_PATH) ->
             is_configured = bool(configured_value) and not configured_value.startswith("dummy-")
         masked = f"****{configured_value[-4:]}" if is_configured and len(configured_value) >= 4 else ""
 
-        # 用量查询专用的 key：跟 gateway/custom_router_hook.py 在请求时用同样的算法
-        # （model + api_base + 真实 api_key 的哈希）算出来，两边才能对上号；
-        # 在没配置真实 key 之前这个值退化成没有哈希后缀的版本，此时反正也
-        # 没有真实用量可查，不影响展示（配置完并重启后，两边会自动同步成
-        # 带哈希后缀的一致值）。
-        usage_key = usage_tracker.make_channel_id(model, api_base, configured_value or None)
+        # 用量按「凭据/Key」合并：同一 env（如 MISTRAL_KEY_1）下的多模型、
+        # 多档位共用一份账本；不同账号 env 仍分开。与 hook 记账一致。
+        usage_key = usage_tracker.make_usage_key(
+            model, api_base, configured_value or None, env_var=env_var,
+        )
+        # 旧账本主键（按模型拆分）仍保留在 Redis，展示时与新键合并，避免「历史消失」
+        legacy_usage_key = usage_tracker.make_channel_id(
+            model, api_base, configured_value or None,
+        )
 
         # model：LiteLLM 路由串（含 gemini/ openai/ 等 provider 前缀）
         # model_display：厂商真实 model id，给用户编辑用（无需手写前缀）
@@ -200,11 +238,16 @@ def load_channels(config_path: Path = CONFIG_PATH, env_path: Path = ENV_PATH) ->
         manual_priority = priority_overrides.get_priority(
             pool, model, api_base, env_var
         )
+        quota_kind = free_quota_kind(env_var or "", model)
 
         channels[display_id] = {
             "channel_id": display_id,
             "legacy_channel_id": legacy_channel_id,
             "usage_key": usage_key,
+            "legacy_usage_key": legacy_usage_key,
+            # 同 Key 多模型共用额度（仪表盘展示与路由预占均按凭据）
+            "quota_shared": bool(env_var),
+            "quota_scope": "credential" if env_var else "channel",
             "direct_model_name": direct_model_name,
             "model": model,
             "model_display": model_display,
@@ -223,8 +266,8 @@ def load_channels(config_path: Path = CONFIG_PATH, env_path: Path = ENV_PATH) ->
             "how_free_zh": info.get("how_free_zh") or "",
             "pricing_detail_zh": info.get("pricing_detail_zh") or "",
             # 模型级：可重置免费优先；一次性免费往后排（如硅基 V3/R1）
-            "free_quota_kind": free_quota_kind(env_var or "", model),
-            "free_quota_label_zh": free_quota_label_zh(free_quota_kind(env_var or "", model)),
+            "free_quota_kind": quota_kind,
+            "free_quota_label_zh": free_quota_label_zh(quota_kind),
             "tier": TIER_LABELS[pool],
             "tier_pool": pool,
             "is_trusted_pool_member": usage_tracker.make_channel_id(model, api_base) in trusted_keys,
@@ -233,8 +276,14 @@ def load_channels(config_path: Path = CONFIG_PATH, env_path: Path = ENV_PATH) ->
             "max_input_tokens": params.get("max_input_tokens"),
             "is_configured": is_configured,
             "masked_key": masked,
-            # 先挂文档/config 限额骨架；后端合并 usage 后再注入 used
-            "rate_limits": build_rate_limits(env_var, params.get("rpm"), usage=None),
+            # 同 Key 共用额度：展示用文档/账号级限额，不用单模型 config rpm
+            # （config rpm 只作路由权重，Mistral 等真实限额是账号级 TPM/月 tokens）
+            "rate_limits": build_rate_limits(
+                env_var,
+                None if env_var else params.get("rpm"),
+                usage=None,
+                quota_kind=quota_kind,
+            ),
             "capabilities": (
                 runtime_registry.channels.get(display_id, {}).get("capabilities", {})
                 if runtime_registry else {}

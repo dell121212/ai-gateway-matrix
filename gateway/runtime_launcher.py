@@ -17,7 +17,7 @@ from typing import Any
 
 import yaml
 
-from gateway import priority_overrides
+from gateway import priority_overrides, tier_overrides
 
 
 SOURCE_CONFIG = Path(os.environ.get("SOURCE_GATEWAY_CONFIG_PATH", "/app/config.yaml"))
@@ -88,6 +88,8 @@ def build_runtime_config(
     runtime = copy.deepcopy(source)
     # Apply the dashboard's durable user choices before both startup builds and
     # in-memory hot reloads.  The source catalog itself remains human-editable.
+    # 档位覆盖须先于优先级：priority 覆盖按 (pool, model, …) 索引。
+    tier_overrides.apply_to_source(runtime)
     priority_overrides.apply_to_source(runtime)
     source_models = runtime.get("model_list") or []
     kept: list[dict[str, Any]] = []

@@ -74,7 +74,8 @@ def record(
     if channel_id:
         data["by_channel"][channel_id] = entry
     if env_var:
-        data["by_company"].setdefault(env_var, entry)
+        # 同一公司的每个账号必须保留自己的最近探测结果，不能只写入第一个账号。
+        data["by_company"][env_var] = entry
     _save(data)
 
 

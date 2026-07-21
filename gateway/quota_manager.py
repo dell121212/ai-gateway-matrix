@@ -67,10 +67,16 @@ async def reserve_limits(
 async def reserve_channel(channel: dict[str, Any]) -> bool:
     display_id = str(channel.get("display_id", ""))
     env_var = str(channel.get("env_var") or "no-credential")
-    limits = [
-        (f"channel:{display_id}:rpm", channel.get("rpm_limit") or 0, 60),
-        (f"credential:{env_var}:rpm", channel.get("credential_rpm_limit") or 0, 60),
-    ]
+    # 同一 Key 挂多模型/多档时：只按凭据级限额预占，避免弱/中/强各自
+    # 一套 channel RPM 把同一 Mistral Key 拆成多份假额度。
+    shared = bool(channel.get("env_var")) and channel.get("shared_credential_quota", True)
+    limits: list[tuple[str, int, int]] = []
+    if not shared:
+        limits.append(
+            (f"channel:{display_id}:rpm", channel.get("rpm_limit") or 0, 60),
+        )
+    cred_rpm = channel.get("credential_rpm_limit") or channel.get("rpm_limit") or 0
+    limits.append((f"credential:{env_var}:rpm", cred_rpm, 60))
     for item in channel.get("additional_limits") or []:
         if not isinstance(item, dict):
             continue

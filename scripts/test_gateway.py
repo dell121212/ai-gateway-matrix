@@ -348,23 +348,28 @@ async def main() -> int:
                 warnings.append(f"GATEWAY_MASTER_KEY 长度只有 {len(key)} 字符，建议至少 32 字符")
     print("[7/9] .env 弱密码检查完成")
 
-    # ── 7. 流式请求路径 ───────────────────────────────────────
+    # ── 7. 强制非流式（客户端 stream=true 也应被关掉）──────────
     stream_data = {
         "model": "auto-route",
         "stream": True,
+        "stream_options": {"include_usage": True},
         "messages": [{"role": "user", "content": "hi"}],
     }
     try:
         result = await hook.async_pre_call_hook(
             user_api_key_dict=None, cache=None, data=stream_data, call_type="acompletion"
         )
-        # v3: "hi" 是超短输入，应该路由到 fast-pool
-        if result.get("model") != "fast-pool":
-            errors.append(f"流式请求路由异常: 期望 fast-pool, 实际 {result.get('model')}")
-        print(f"     ✓ 流式请求 (stream=true) hook 正常: model={result.get('model')}")
+        if result.get("stream") is not False:
+            errors.append(f"应强制 stream=false，实际 stream={result.get('stream')!r}")
+        if result.get("stream_options") is not None:
+            errors.append("应清除 stream_options")
+        # "hi" 是超短输入，通常路由到 fast-pool
+        if result.get("model") not in {"fast-pool", "free-pool", "strong-model-pool", "elite-model-pool"}:
+            errors.append(f"请求路由异常: model={result.get('model')}")
+        print(f"     ✓ 强制非流式: stream={result.get('stream')}, model={result.get('model')}")
     except Exception as e:
-        errors.append(f"流式请求测试异常: {type(e).__name__}: {e}")
-    print("[8/9] 流式请求路径检查完成（仅验证 hook 不出错，不代表真实计费/计数准确）")
+        errors.append(f"非流式强制测试异常: {type(e).__name__}: {e}")
+    print("[8/9] 强制非流式路径检查完成")
 
     # ── 8. 并发选择稳定性 ─────────────────────────────────────
     # 注意：这一步只验证"高并发下选择函数本身稳定不崩"，不验证 RPM 限制本身。

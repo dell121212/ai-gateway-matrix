@@ -18,6 +18,8 @@ config.yaml 编辑工具
 from __future__ import annotations
 
 import re
+import hashlib
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -292,6 +294,144 @@ def add_company_account(config_path: Path, source_env: str) -> dict:
         return _add_company_account_locked(config_path, source_env)
 
 
+def _custom_env_stem(provider_name: str) -> str:
+    ascii_name = re.sub(r"[^A-Za-z0-9]+", "_", provider_name or "").strip("_").upper()
+    if not ascii_name:
+        digest = hashlib.sha1((provider_name or "custom").encode("utf-8")).hexdigest()[:8].upper()
+        ascii_name = f"CUSTOM_{digest}"
+    if ascii_name[0].isdigit():
+        ascii_name = f"CUSTOM_{ascii_name}"
+    return ascii_name[:48]
+
+
+def add_custom_channel(
+    config_path: Path,
+    *,
+    provider_name: str,
+    api_base: str,
+    api_key: str,
+    model: str,
+    pool: str,
+) -> dict:
+    """添加一个由面板发现的 OpenAI 兼容免费 API 渠道。"""
+    allowed_pools = {
+        "fast-pool", "free-pool", "strong-model-pool", "elite-model-pool",
+    }
+    if pool not in allowed_pools:
+        raise ValueError("自动判断的模型档位不合法")
+    if not re.fullmatch(r"https?://[^\s]+", api_base or ""):
+        raise ValueError("API 地址必须是 http:// 或 https:// URL")
+    raw_model = (model or "").strip()
+    if not _UPSTREAM_MODEL_RE.fullmatch(raw_model):
+        raise ValueError("发现的模型名称含不安全字符")
+    if not api_key or any(ch in api_key for ch in ("\r", "\n", "\x00")):
+        raise ValueError("API Key 不能为空或包含换行")
+
+    with locked_file(config_path):
+        text = config_path.read_text(encoding="utf-8")
+        existing_env = set(re.findall(r"os\.environ/([A-Z][A-Z0-9_]*)", text))
+        base_env = f"{_custom_env_stem(provider_name)}_API_KEY"
+        env_var = base_env
+        suffix = 2
+        while env_var in existing_env:
+            env_var = f"{base_env}_{suffix}"
+            suffix += 1
+
+        # 自定义 OpenAI 兼容端点必须显式使用 LiteLLM 的 openai provider；
+        # 厂商返回的模型 ID 即使包含斜杠也属于上游 ID 的一部分。
+        stored_model = f"openai/{raw_model}"
+        direct_name = channel_ids.make_direct_model_name(stored_model, api_base, env_var)
+        if re.search(rf"^  - model_name:\s*{re.escape(direct_name)}(?:\s|$|#)", text, re.M):
+            raise ValueError("该 API 与模型已经存在")
+
+        # JSON 字符串也是合法 YAML 标量，且不会像 yaml.safe_dump(scalar)
+        # 那样额外输出文档结束符 ``...``。
+        quoted_name = json.dumps(
+            (provider_name or "自定义免费 API").strip(), ensure_ascii=False
+        )
+        params = (
+            f"      model: {stored_model}\n"
+            f"      api_base: {api_base}\n"
+            f"      api_key: os.environ/{env_var}\n"
+            "      rpm: 30\n"
+            "      priority: 70\n"
+            "      max_input_tokens: 120000\n"
+        )
+        block = (
+            f"  - model_name: {pool}\n"
+            "    model_info:\n"
+            f"      custom_provider_name: {quoted_name}\n"
+            "      billing: free\n"
+            "    litellm_params:\n"
+            f"{params}"
+            f"  - model_name: {direct_name}  # 面板智能发现\n"
+            "    model_info:\n"
+            f"      custom_provider_name: {quoted_name}\n"
+            "      billing: free\n"
+            "    litellm_params:\n"
+            f"{params}"
+        )
+        marker = re.search(r"(?m)^# ═+\n#  Router 设置", text)
+        if marker is None:
+            raise ValueError("config.yaml 缺少 Router 设置标记")
+        new_text = text[:marker.start()] + block + text[marker.start():]
+        safe_rewrite(config_path, new_text, mode=0o640, validator=_validate_yaml)
+        return {
+            "env_var": env_var,
+            "model": stored_model,
+            "model_display": raw_model,
+            "pool": pool,
+            "api_base": api_base,
+            "direct_model_name": direct_name,
+        }
+
+
+def delete_channel(
+    config_path: Path,
+    *,
+    pool: str,
+    model: str,
+    api_base: Optional[str],
+    env_var: Optional[str],
+) -> bool:
+    """删除主池 deployment、对应 direct 条目及其 trusted 引用。"""
+    with locked_file(config_path):
+        text = config_path.read_text(encoding="utf-8")
+        parts = _MODEL_NAME_SPLIT_RE.split(text)
+        matches = _matching_primary_parts(parts, pool, model, api_base, env_var)
+        if len(matches) != 1:
+            return False
+        primary_idx = matches[0]
+        primary_part = parts[primary_idx]
+        direct_matches = _find_direct_indices(
+            parts,
+            model=model,
+            api_base=api_base,
+            env_var=env_var,
+            primary_part=primary_part,
+        )
+        if len(direct_matches) != 1:
+            return False
+
+        remove_indices = {primary_idx, direct_matches[0]}
+        anchor = _anchor_name(primary_part)
+        if anchor:
+            for index, part in enumerate(parts):
+                if re.match(r"  - model_name:\s*trusted-pool(?:\s|$|#)", part) and re.search(
+                    rf"litellm_params:\s*\*{re.escape(anchor)}\b", part
+                ):
+                    remove_indices.add(index)
+        for index in sorted(remove_indices, reverse=True):
+            parts.pop(index)
+        safe_rewrite(
+            config_path,
+            "".join(parts),
+            mode=0o640,
+            validator=_validate_yaml,
+        )
+        return True
+
+
 def _add_company_account_locked(config_path: Path, source_env: str) -> dict:
     text = config_path.read_text(encoding="utf-8")
     parts = _MODEL_NAME_SPLIT_RE.split(text)
@@ -415,6 +555,21 @@ def _add_company_account_locked(config_path: Path, source_env: str) -> dict:
         "cloned_models": len(primary_indices),
         "source_env_var": source_env,
     }
+
+
+def update_tier(
+    config_path: Path,
+    pool: str,
+    model: str,
+    api_base: Optional[str],
+    env_var: Optional[str],
+    new_pool: str,
+) -> bool:
+    """把主池条目的 model_name 从 pool 改成 new_pool（用户自选弱/中/强/顶级）。"""
+    with locked_file(config_path):
+        return _update_tier_locked(
+            config_path, pool, model, api_base, env_var, new_pool
+        )
 
 
 def update_priority(
@@ -559,6 +714,52 @@ def _validate_yaml(path: Path) -> None:
             raise ValueError(f"{expected} 与主 deployment 缺少对应 direct 分组")
         if direct.get(expected) != params:
             raise ValueError(f"{expected} 与主 deployment 参数漂移")
+
+
+_PRIMARY_POOLS = frozenset({
+    "fast-pool",
+    "free-pool",
+    "strong-model-pool",
+    "elite-model-pool",
+})
+
+
+def _update_tier_locked(
+    config_path: Path,
+    pool: str,
+    model: str,
+    api_base: Optional[str],
+    env_var: Optional[str],
+    new_pool: str,
+) -> bool:
+    if pool not in _PRIMARY_POOLS or new_pool not in _PRIMARY_POOLS:
+        return False
+    if pool == new_pool:
+        return True
+    text = config_path.read_text(encoding="utf-8")
+    parts = _MODEL_NAME_SPLIT_RE.split(text)
+    matches = _matching_primary_parts(parts, pool, model, api_base, env_var)
+    if len(matches) != 1:
+        return False
+    idx = matches[0]
+    block = parts[idx]
+    new_block = re.sub(
+        r"(^  - model_name:\s*)\S+",
+        rf"\g<1>{new_pool}",
+        block,
+        count=1,
+        flags=re.M,
+    )
+    if new_block == block:
+        return False
+    parts[idx] = new_block
+    safe_rewrite(
+        config_path,
+        "".join(parts),
+        mode=0o640,
+        validator=_validate_yaml,
+    )
+    return True
 
 
 def _update_priority_locked(

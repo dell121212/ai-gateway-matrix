@@ -49,7 +49,7 @@ def test_request_capabilities_are_detected_and_filter_candidates():
         "response_format": {"type": "json_object"},
     }
     requirements = reg.request_requirements(data)
-    assert requirements == {"text", "vision", "tools", "json_object"}
+    assert requirements == {"text", "vision", "tools"}
     candidates = reg.candidates("fast-pool", requirements)
     assert candidates
     assert all(all(channel["capabilities"][key] for key in requirements) for channel in candidates)
@@ -82,6 +82,10 @@ def test_security_text_covers_structured_keys_prompt_and_long_tail():
 def test_plain_text_response_format_does_not_require_json_schema():
     reg = registry()
     assert reg.request_requirements({"response_format": {"type": "text"}}) == {"text"}
+    assert reg.request_requirements({"response_format": {"type": "json_object"}}) == {"text"}
+    assert reg.request_requirements({"response_format": {"type": "json_schema"}}) == {
+        "text", "json_schema",
+    }
     assert reg.request_requirements({"tool_choice": "none"}) == {"text"}
 
 

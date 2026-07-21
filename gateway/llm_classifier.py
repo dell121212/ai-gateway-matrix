@@ -24,7 +24,8 @@ import logging
 import os
 from typing import Any, Optional
 
-import litellm
+# litellm 仅网关进程需要；仪表盘容器无此包，classifier_status() 等必须可无。
+# 真正 acompletion 时再 import。
 
 from . import quota_manager, usage_tracker
 
@@ -34,8 +35,57 @@ logger = logging.getLogger("ai_gateway_matrix.llm_classifier")
 DEFAULT_CLASSIFIER_MODEL = os.environ.get(
     "CLASSIFIER_MODEL", "openai/minimax-m2.7"
 ).strip() or "openai/minimax-m2.7"
-CLASSIFIER_TIMEOUT_SECONDS = float(os.environ.get("CLASSIFIER_TIMEOUT_SECONDS", "5") or "5")
+CLASSIFIER_TIMEOUT_SECONDS = float(os.environ.get("CLASSIFIER_TIMEOUT_SECONDS", "12") or "12")
 CLASSIFIER_MAX_INPUT_CHARS = 2000  # 只截前/后片段：够判强度，又快又省
+
+# 已知渠道 env → 默认分诊模型 / api_base（用户「选用已有 API」时不必手填）
+_SOURCE_ENV_DEFAULTS: dict[str, dict[str, Optional[str]]] = {
+    "GENERALCOMPUTE_API_KEY": {
+        "model": "openai/minimax-m2.7",
+        "api_base": "https://api.generalcompute.com/v1",
+        "label": "GeneralCompute/minimax",
+    },
+    "DEEPSEEK_API_KEY": {
+        "model": "deepseek/deepseek-reasoner",
+        "api_base": None,
+        "label": "DeepSeek/reasoner",
+    },
+    "GEMINI_API_KEY": {
+        "model": "gemini/gemini-3.5-flash",
+        "api_base": None,
+        "label": "Gemini/3.5-flash",
+    },
+    "DASHSCOPE_API_KEY": {
+        "model": "openai/qwen-plus",
+        "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "label": "DashScope/qwen-plus",
+    },
+    "MISTRAL_KEY_1": {
+        "model": "mistral/mistral-large-latest",
+        "api_base": None,
+        "label": "Mistral/large-1",
+    },
+    "MISTRAL_KEY_2": {
+        "model": "mistral/mistral-large-latest",
+        "api_base": None,
+        "label": "Mistral/large-2",
+    },
+    "OPENROUTER_API_KEY": {
+        "model": "openrouter/openai/gpt-4o-mini",
+        "api_base": None,
+        "label": "OpenRouter/gpt-4o-mini",
+    },
+    "MOONSHOT_API_KEY": {
+        "model": "openai/moonshot-v1-8k",
+        "api_base": "https://api.moonshot.cn/v1",
+        "label": "Moonshot/kimi",
+    },
+    "GROQ_API_KEY": {
+        "model": "groq/openai/gpt-oss-120b",
+        "api_base": None,
+        "label": "Groq/gpt-oss-120b",
+    },
+}
 
 
 def _positive_int_env(name: str, default: int) -> int:
@@ -45,6 +95,13 @@ def _positive_int_env(name: str, default: int) -> int:
     except (TypeError, ValueError):
         logger.warning("[ai-gateway-matrix] %s 不是正整数，使用默认值 %d", name, default)
         return default
+
+
+def _truthy_env(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
 CLASSIFIER_RPM = _positive_int_env("CLASSIFIER_RPM", 30)
@@ -58,50 +115,68 @@ TIER_TO_POOL = {
     "顶级": "elite-model-pool",  # 100B+
 }
 
-# 自动分诊候选：优先强模型 + 有 Key 的渠道（按顺序尝试）
-# model 为 LiteLLM 路由串；api_base 仅 OpenAI 兼容自定义端点需要
-_AUTO_STRONG_CLASSIFIERS: list[dict[str, Any]] = [
+# 智能分诊必须由顶级模型完成：最多依次尝试三个不同顶级渠道，全部失败后
+# 只允许再试一个强档渠道。Groq / SambaNova / SiliconFlow 被用户明确限制为
+# 弱档，因此不能出现在分诊候选里。
+_AUTO_ELITE_CLASSIFIERS: list[dict[str, Any]] = [
     {
         "env": "GENERALCOMPUTE_API_KEY",
         "model": "openai/minimax-m2.7",
         "api_base": "https://api.generalcompute.com/v1",
         "label": "GeneralCompute/minimax",
+        "tier": "elite",
     },
     {
-        "env": "GROQ_API_KEY",
-        "model": "groq/openai/gpt-oss-120b",
+        "env": "MISTRAL_KEY_1",
+        "model": "mistral/mistral-large-latest",
         "api_base": None,
-        "label": "Groq/gpt-oss-120b",
+        "label": "Mistral/large-1",
+        "tier": "elite",
     },
     {
         "env": "DEEPSEEK_API_KEY",
-        "model": "deepseek/deepseek-chat",
+        "model": "deepseek/deepseek-reasoner",
         "api_base": None,
-        "label": "DeepSeek/chat",
+        "label": "DeepSeek/reasoner",
+        "tier": "elite",
     },
     {
         "env": "OPENROUTER_API_KEY",
-        "model": "openrouter/deepseek/deepseek-r1:free",
+        "model": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
         "api_base": None,
-        "label": "OpenRouter/deepseek-r1-free",
+        "label": "OpenRouter/Nemotron-550B",
+        "tier": "elite",
     },
     {
-        "env": "SAMBANOVA_API_KEY",
-        "model": "sambanova/Meta-Llama-3.1-70B-Instruct",
+        "env": "MISTRAL_KEY_2",
+        "model": "mistral/mistral-large-latest",
         "api_base": None,
-        "label": "SambaNova/70B",
+        "label": "Mistral/large-2",
+        "tier": "elite",
     },
+]
+
+_AUTO_STRONG_CLASSIFIERS: list[dict[str, Any]] = [
     {
         "env": "GEMINI_API_KEY",
-        "model": "gemini/gemini-2.5-pro",
+        "model": "gemini/gemini-3.5-flash",
         "api_base": None,
-        "label": "Gemini/2.5-pro",
+        "label": "Gemini/3.5-flash",
+        "tier": "strong",
     },
     {
-        "env": "SILICONFLOW_API_KEY",
-        "model": "openai/deepseek-ai/DeepSeek-R1",
-        "api_base": "https://api.siliconflow.cn/v1",
-        "label": "SiliconFlow/DeepSeek-R1",
+        "env": "DASHSCOPE_API_KEY",
+        "model": "openai/qwen-plus",
+        "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "label": "DashScope/qwen-plus",
+        "tier": "strong",
+    },
+    {
+        "env": "MISTRAL_KEY_1",
+        "model": "mistral/mistral-medium-latest",
+        "api_base": None,
+        "label": "Mistral/medium",
+        "tier": "strong",
     },
 ]
 
@@ -165,39 +240,160 @@ def _is_usable_key(value: str) -> bool:
         return True
 
 
-def resolve_classifier_backend() -> Optional[dict[str, Any]]:
-    """解析分诊用的 model / api_key / api_base。无可用强档 Key 时返回 None。"""
+def _normalize_model_name(model: str, api_base: Optional[str]) -> str:
+    model = (model or "").strip()
+    if not model:
+        return DEFAULT_CLASSIFIER_MODEL
+    if api_base and "/" not in model:
+        return f"openai/{model}"
+    if "/" not in model:
+        return f"openai/{model}"
+    return model
+
+
+def _backend_from_source_env(env_name: str) -> Optional[dict[str, Any]]:
+    """从已有渠道凭据构造专用分诊后端。"""
+    env_name = (env_name or "").strip().upper()
+    if not env_name or env_name == "AUTO":
+        return None
+    key = (os.environ.get(env_name) or "").strip()
+    if not _is_usable_key(key):
+        return None
+    defaults = _SOURCE_ENV_DEFAULTS.get(env_name, {})
+    model = (os.environ.get("CLASSIFIER_MODEL") or "").strip() or defaults.get("model") or DEFAULT_CLASSIFIER_MODEL
+    api_base_env = (os.environ.get("CLASSIFIER_API_BASE") or "").strip()
+    api_base = api_base_env or defaults.get("api_base") or None
+    model = _normalize_model_name(model, api_base)
+    label = defaults.get("label") or f"source/{env_name}"
+    return {
+        "model": model,
+        "api_key": key,
+        "api_base": api_base,
+        "cred_name": env_name,
+        "label": label,
+        "tier": "elite",
+        "dedicated": True,
+    }
+
+
+def resolve_dedicated_classifier() -> Optional[dict[str, Any]]:
+    """解析用户指定的「专用分诊/答检」后端（不含自动免费链）。
+
+    优先级：
+      1. CLASSIFIER_API_KEY（独立专用 Key）
+      2. CLASSIFIER_SOURCE_ENV=某渠道 env（复用已填 Key，推荐）
+    """
     explicit = (os.environ.get("CLASSIFIER_API_KEY") or "").strip()
     if explicit and _is_usable_key(explicit):
         model = (os.environ.get("CLASSIFIER_MODEL") or "").strip() or DEFAULT_CLASSIFIER_MODEL
         api_base = (os.environ.get("CLASSIFIER_API_BASE") or "").strip() or None
-        # 裸模型名补 openai/（自定义 base 场景）
-        if api_base and "/" not in model:
-            model = f"openai/{model}"
-        elif "/" not in model and model:
-            # 无 base 时若像 openai 官方，仍加 openai/
-            model = f"openai/{model}"
+        model = _normalize_model_name(model, api_base)
         return {
             "model": model,
             "api_key": explicit,
             "api_base": api_base,
             "cred_name": "CLASSIFIER_API_KEY",
-            "label": f"explicit/{model}",
+            "label": f"dedicated/{model}",
+            "tier": "elite",
+            "dedicated": True,
         }
+
+    source = (os.environ.get("CLASSIFIER_SOURCE_ENV") or "").strip().upper()
+    if source and source not in {"", "AUTO", "NONE", "OFF"}:
+        return _backend_from_source_env(source)
+    return None
+
+
+def resolve_classifier_backends() -> list[dict[str, Any]]:
+    """返回分诊链。
+
+    · 已配置专用分诊时：默认**独占**该后端（CLASSIFIER_EXCLUSIVE 默认 true），
+      保证分配任务走你指定的稳定 API，不被免费链拖垮。
+    · 未配置时：自动最多三个顶级 + 一个强档（历史行为）。
+    """
+    dedicated = resolve_dedicated_classifier()
+    exclusive = _truthy_env("CLASSIFIER_EXCLUSIVE", default=True)
+    if dedicated and exclusive:
+        return [dedicated]
+
+    resolved: list[dict[str, Any]] = []
+    if dedicated:
+        resolved.append(dedicated)
+
+    for cand in _AUTO_ELITE_CLASSIFIERS:
+        if len([item for item in resolved if item["tier"] == "elite"]) >= 3:
+            break
+        env_name = cand["env"]
+        key = (os.environ.get(env_name) or "").strip()
+        if not _is_usable_key(key):
+            continue
+        identity = (cand["model"], env_name)
+        if any((item["model"], item["cred_name"]) == identity for item in resolved):
+            continue
+        resolved.append({
+            "model": cand["model"],
+            "api_key": key,
+            "api_base": cand.get("api_base"),
+            "cred_name": env_name,
+            "label": cand.get("label") or env_name,
+            "tier": "elite",
+            "dedicated": False,
+        })
 
     for cand in _AUTO_STRONG_CLASSIFIERS:
         env_name = cand["env"]
         key = (os.environ.get(env_name) or "").strip()
         if not _is_usable_key(key):
             continue
-        return {
+        if any(item["cred_name"] == env_name and item["model"] == cand["model"] for item in resolved):
+            continue
+        resolved.append({
             "model": cand["model"],
             "api_key": key,
             "api_base": cand.get("api_base"),
             "cred_name": env_name,
             "label": cand.get("label") or env_name,
-        }
-    return None
+            "tier": "strong",
+            "dedicated": False,
+        })
+        break
+    return resolved
+
+
+def classifier_status() -> dict[str, Any]:
+    """供仪表盘展示当前分诊配置（不泄露完整 Key）。"""
+    dedicated = resolve_dedicated_classifier()
+    backends = resolve_classifier_backends()
+    source = (os.environ.get("CLASSIFIER_SOURCE_ENV") or "").strip().upper()
+    has_explicit = bool((os.environ.get("CLASSIFIER_API_KEY") or "").strip())
+    mode = "auto"
+    if has_explicit:
+        mode = "dedicated_key"
+    elif source and source not in {"", "AUTO", "NONE", "OFF"}:
+        mode = "source_env"
+    return {
+        "mode": mode,
+        "source_env": source if mode == "source_env" else "",
+        "model": (os.environ.get("CLASSIFIER_MODEL") or "").strip()
+            or (dedicated or {}).get("model")
+            or "",
+        "api_base": (os.environ.get("CLASSIFIER_API_BASE") or "").strip()
+            or (dedicated or {}).get("api_base")
+            or "",
+        "exclusive": _truthy_env("CLASSIFIER_EXCLUSIVE", default=True),
+        "has_dedicated": dedicated is not None,
+        "active_label": (backends[0].get("label") if backends else None),
+        "active_model": (backends[0].get("model") if backends else None),
+        "chain_len": len(backends),
+        "answer_verify_mode": (os.environ.get("ANSWER_VERIFY_MODE") or "hybrid").strip().lower(),
+        "known_source_envs": sorted(_SOURCE_ENV_DEFAULTS.keys()),
+    }
+
+
+def resolve_classifier_backend() -> Optional[dict[str, Any]]:
+    """兼容旧调用方：返回分诊链的第一个可用后端。"""
+    backends = resolve_classifier_backends()
+    return backends[0] if backends else None
 
 
 async def classify_task(text: str) -> Optional[str]:
@@ -205,20 +401,12 @@ async def classify_task(text: str) -> Optional[str]:
     if not text:
         return None
 
-    backend = resolve_classifier_backend()
-    if backend is None:
+    backends = resolve_classifier_backends()
+    if not backends:
         logger.info(
-            "[ai-gateway-matrix] 无可用强档 Key 做智能分诊，回退启发式 "
+            "[ai-gateway-matrix] 无可用顶级/强档 Key 做智能分诊，回退启发式 "
             "（可配 CLASSIFIER_API_KEY 或任意强档厂商 Key）"
         )
-        return None
-
-    cred_name = backend["cred_name"]
-    reserved = await quota_manager.reserve_limits(
-        [(f"credential:{cred_name}:classifier_rpm", CLASSIFIER_RPM, 60)]
-    )
-    if not reserved:
-        logger.info("[ai-gateway-matrix] 分诊器本分钟额度已满（%s），回退启发式", cred_name)
         return None
 
     half = CLASSIFIER_MAX_INPUT_CHARS // 2
@@ -227,75 +415,69 @@ async def classify_task(text: str) -> Optional[str]:
         if len(text) <= CLASSIFIER_MAX_INPUT_CHARS
         else text[:half] + "\n[...]\n" + text[-half:]
     )
-    usage_id = usage_tracker.make_channel_id(
-        backend["model"], backend.get("api_base"), api_key=backend["api_key"]
-    )
-
-    kwargs: dict[str, Any] = {
-        "model": backend["model"],
-        "api_key": backend["api_key"],
-        "messages": [
-            {"role": "system", "content": CLASSIFIER_SYSTEM_PROMPT},
-            {"role": "user", "content": snippet},
-        ],
-        # 推理模型可能先消耗一小段 reasoning token；40 容易只返回
-        # {"tier": null} 或截断正文。128 仍是极短分诊，但能留足最终 JSON。
-        "max_tokens": 128,
-        "temperature": 0,
-        "timeout": CLASSIFIER_TIMEOUT_SECONDS,
-    }
-    if backend.get("api_base"):
-        kwargs["api_base"] = backend["api_base"]
-
-    try:
-        response = await litellm.acompletion(
-            **kwargs,
-            response_format={"type": "json_object"},
+    for attempt, backend in enumerate(backends, 1):
+        cred_name = backend["cred_name"]
+        reserved = await quota_manager.reserve_limits(
+            [(f"credential:{cred_name}:classifier_rpm", CLASSIFIER_RPM, 60)]
         )
-    except Exception:
-        # 部分强模型不支持 response_format，再试一次无约束
-        try:
-            response = await litellm.acompletion(**kwargs)
-        except Exception as exc:
+        if not reserved:
             logger.warning(
-                "[ai-gateway-matrix] 强模型分诊失败（%s / %s），回退启发式",
+                "[ai-gateway-matrix] 分诊候选 %s 本分钟额度已满，立即换下一个",
                 backend.get("label"),
-                type(exc).__name__,
             )
+            continue
+
+        usage_id = usage_tracker.make_usage_key(
+            backend["model"],
+            backend.get("api_base"),
+            backend["api_key"],
+            env_var=backend.get("cred_name"),
+        )
+        kwargs: dict[str, Any] = {
+            "model": backend["model"],
+            "api_key": backend["api_key"],
+            "messages": [
+                {"role": "system", "content": CLASSIFIER_SYSTEM_PROMPT},
+                {"role": "user", "content": snippet},
+            ],
+            "max_tokens": 128,
+            "temperature": 0,
+            "timeout": CLASSIFIER_TIMEOUT_SECONDS,
+            "response_format": {"type": "json_object"},
+        }
+        if backend.get("api_base"):
+            kwargs["api_base"] = backend["api_base"]
+
+        try:
+            import litellm
+            response = await litellm.acompletion(**kwargs)
+            raw = response.choices[0].message.content or ""
+            tier = _parse_classifier_tier(raw)
+            if tier not in VALID_TIERS:
+                raise ValueError(f"非法档位 {tier!r}")
+        except Exception as exc:
             await usage_tracker.record_call(usage_id, success=False)
-            return None
+            next_label = (
+                backends[attempt].get("label") if attempt < len(backends) else "启发式"
+            )
+            logger.warning(
+                "[ai-gateway-matrix] 分诊失败（%s / %s），立即换 %s",
+                backend.get("label"), type(exc).__name__, next_label,
+            )
+            continue
 
-    usage = getattr(response, "usage", None)
-    await usage_tracker.record_call(
-        usage_id,
-        success=True,
-        prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
-        completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
-    )
-
-    try:
-        raw = response.choices[0].message.content or ""
-        tier = _parse_classifier_tier(raw)
-    except Exception as exc:
-        logger.warning(
-            "[ai-gateway-matrix] 分诊返回无法解析（%s: %s），回退启发式",
-            type(exc).__name__,
-            exc,
+        usage = getattr(response, "usage", None)
+        await usage_tracker.record_call(
+            usage_id,
+            success=True,
+            prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+            completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
         )
-        return None
-
-    if tier not in VALID_TIERS:
-        logger.warning(
-            "[ai-gateway-matrix] 分诊返回非法档位 %r，回退启发式",
-            tier,
+        pool = TIER_TO_POOL[tier]
+        logger.info(
+            "[ai-gateway-matrix] 智能分诊: 强度=%s → %s（分诊模型=%s，候选 %d/%d）",
+            tier, pool, backend.get("label"), attempt, len(backends),
         )
-        return None
+        return pool
 
-    pool = TIER_TO_POOL[tier]
-    logger.info(
-        "[ai-gateway-matrix] 智能分诊: 强度=%s → %s（分诊模型=%s）",
-        tier,
-        pool,
-        backend.get("label"),
-    )
-    return pool
+    return None

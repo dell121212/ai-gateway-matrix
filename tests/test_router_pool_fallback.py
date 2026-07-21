@@ -26,7 +26,7 @@ def _hook(registry: FakeRegistry) -> ComplexityRouterHook:
 
 def test_fast_text_can_fall_up_to_configured_strong_channel(monkeypatch):
     monkeypatch.setenv("ONLY_STRONG_KEY", "fixture")
-    strong = {"env_var": "ONLY_STRONG_KEY", "direct_model_name": "direct-strong"}
+    strong = {"display_id": "only-strong", "env_var": "ONLY_STRONG_KEY", "direct_model_name": "direct-strong"}
     hook = _hook(FakeRegistry({STRONG_POOL: [strong]}))
 
     target = asyncio.run(hook._resolve_capability_target(FAST_POOL, {"text"}))
@@ -34,11 +34,14 @@ def test_fast_text_can_fall_up_to_configured_strong_channel(monkeypatch):
     assert target == STRONG_POOL
 
 
-def test_strong_text_falls_to_configured_free_channel(monkeypatch):
+def test_strong_text_never_falls_to_configured_free_channel(monkeypatch):
     monkeypatch.setenv("ONLY_FREE_KEY", "fixture")
     free = {"env_var": "ONLY_FREE_KEY", "direct_model_name": "direct-free"}
     hook = _hook(FakeRegistry({FREE_POOL: [free]}))
 
-    target = asyncio.run(hook._resolve_capability_target(STRONG_POOL, {"text"}))
-
-    assert target == FREE_POOL
+    try:
+        asyncio.run(hook._resolve_capability_target(STRONG_POOL, {"text"}))
+    except RuntimeError as exc:
+        assert "没有已配置且支持" in str(exc)
+    else:
+        raise AssertionError("强档不应继续降到中档")

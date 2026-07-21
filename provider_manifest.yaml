@@ -29,6 +29,8 @@ providers:
   GEMINI_API_KEY: {trust: official, sensitive_allowed: false, data_policy: review_required}
   MISTRAL_KEY_1: {trust: official, sensitive_allowed: false, data_policy: review_required}
   MISTRAL_KEY_2: {trust: official, sensitive_allowed: false, data_policy: review_required}
+  MISTRAL_KEY_3: {trust: official, sensitive_allowed: false, data_policy: review_required}
+  MISTRAL_KEY_4: {trust: official, sensitive_allowed: false, data_policy: review_required}
 
   SILICONFLOW_API_KEY: {trust: third_party}
   MODELSCOPE_API_KEY: {trust: third_party, sensitive_allowed: false, data_policy: review_required}
@@ -47,6 +49,12 @@ providers:
   LEPTON_API_KEY: {trust: third_party}
   TOGETHER_API_KEY: {trust: third_party}
   GENERALCOMPUTE_API_KEY:
+    trust: third_party
+    billing: paid
+    sensitive_allowed: false
+    data_policy: review_required
+    capabilities: {tools: true, json_object: true}
+  GENERALCOMPUTE_API_KEY_2:
     trust: third_party
     billing: paid
     sensitive_allowed: false

@@ -37,6 +37,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, WebSocket
@@ -48,7 +49,14 @@ from starlette.responses import StreamingResponse
 from websockets.asyncio.client import connect as websocket_connect
 from websockets.exceptions import ConnectionClosed
 
-from gateway import env_sync, optimal_channels, pricing, priority_overrides, usage_tracker
+from gateway import (
+    env_sync,
+    optimal_channels,
+    pricing,
+    priority_overrides,
+    tier_overrides,
+    usage_tracker,
+)
 from . import (
     balance_probe,
     channel_loader,
@@ -129,9 +137,12 @@ def _is_dashboard_api_path(path: str) -> bool:
             "/api/summary",
             "/api/settings",
             "/api/gateway/probe",
+            "/api/routing-control",
         }
         or path.startswith("/api/channels/")
         or path.startswith("/api/client-keys/")
+        or path.startswith("/api/companies/")
+        or path.startswith("/api/custom-providers")
     )
 
 
@@ -181,8 +192,30 @@ class PriorityUpdateRequest(BaseModel):
     priority: int = Field(ge=0, le=1000)
 
 
+class TierUpdateRequest(BaseModel):
+    """用户自选档位：弱/中/强/顶级 或 pool 名。"""
+    tier: str = Field(min_length=1, max_length=32)
+
+
 class ModelUpdateRequest(BaseModel):
     model: str = Field(min_length=1, max_length=300)
+
+
+class CustomApiRequest(BaseModel):
+    provider_name: str = Field(default="自定义免费 API", min_length=1, max_length=80)
+    api_base: str = Field(min_length=8, max_length=500)
+    api_key: str = Field(min_length=1, max_length=4096)
+
+
+class CustomApiAddRequest(CustomApiRequest):
+    model: str = Field(min_length=1, max_length=300)
+    pool: Optional[str] = Field(default=None, max_length=32)
+
+
+class CustomApiSnippetRequest(BaseModel):
+    """用户粘贴的官方文档 / curl / .env / JSON。"""
+    snippet: str = Field(min_length=8, max_length=100_000)
+    discover: bool = True
 
 
 class ClientKeyCreateRequest(BaseModel):
@@ -194,6 +227,17 @@ class SettingsUpdateRequest(BaseModel):
     language: Optional[str] = None
     autostart: Optional[bool] = None
     autostart_silent: Optional[bool] = None
+
+
+class RoutingControlUpdate(BaseModel):
+    """智能分诊 + 答检设置。写入 .env 并通知网关热加载。"""
+    mode: Optional[str] = None  # auto | source_env | dedicated_key
+    source_env: Optional[str] = None
+    api_key: Optional[str] = None
+    model: Optional[str] = None
+    api_base: Optional[str] = None
+    exclusive: Optional[bool] = True
+    answer_verify_mode: Optional[str] = None  # hybrid | local | dedicated | off
 
 
 @app.get("/healthz")
@@ -636,18 +680,93 @@ async def list_channels():
     optimal_list = await optimal_channels.list_optimal()
     optimal_by_id = {item["display_id"]: item for item in optimal_list}
 
+    # 同一 usage_key（按 Key）合并旧「模型级」账本，恢复历史 token/花费展示
+    from collections import defaultdict
+
+    keys_by_usage: dict[str, list[str]] = defaultdict(list)
     for ch in channels:
-        # 注意：这里必须用 usage_key（哈希版本），不是 channel_id（展示用的
-        # 稳定主键）——这两个字段長得像但含义不同，之前这里传错过一次
-        # （传了 channel_id），会导致用量永远查不到数据，是实测发现的真实 bug。
-        ch["usage"] = await usage_tracker.get_usage(ch["usage_key"])
+        uk = ch.get("usage_key") or ""
+        if not uk:
+            continue
+        bucket = keys_by_usage[uk]
+        if uk not in bucket:
+            bucket.append(uk)
+        leg = ch.get("legacy_usage_key") or ""
+        if leg and leg not in bucket:
+            bucket.append(leg)
+    usage_cache: dict[str, dict] = {}
+    for uk, keys in keys_by_usage.items():
+        try:
+            usage_cache[uk] = await usage_tracker.get_usage_merged(keys)
+        except Exception:
+            usage_cache[uk] = await usage_tracker.get_usage(uk)
+
+    for ch in channels:
+        # 注意：这里必须用 usage_key，不是 channel_id（展示用的稳定主键）
+        uk = ch.get("usage_key") or ""
+        ch["usage"] = usage_cache.get(uk) or await usage_tracker.get_usage(uk)
+        # 按模型规模补全花费估算 + 免费层「市场等值节省」
+        try:
+            from gateway import pricing
+
+            spend = pricing.estimate_usage_spend(
+                str(ch.get("model") or ""),
+                ch["usage"] or {},
+                api_base=ch.get("api_base"),
+            )
+            ch["estimated_spend"] = spend
+            # 写入 usage 展示字段（不写回 Redis，仅 API 响应）
+            u = dict(ch["usage"] or {})
+            if u.get("day_cost") is None and spend.get("day_cost") is not None:
+                u["day_cost"] = spend["day_cost"]
+                u["cost_source"] = spend.get("cost_source") or "estimated"
+            if u.get("total_cost") is None and spend.get("total_cost") is not None:
+                u["total_cost"] = spend["total_cost"]
+                u["cost_source"] = spend.get("cost_source") or "estimated"
+            ch["usage"] = u
+            # 节省：按本渠道模型规模折扣后的市场等值（小模型不虚高）
+            day_tok = int(u.get("day_tokens") or 0)
+            tot_tok = int(u.get("total_tokens") or 0)
+            save_day, save_src = pricing.market_value_for_savings(
+                str(ch.get("model") or ""), day_tok, api_base=ch.get("api_base")
+            )
+            save_tot, _ = pricing.market_value_for_savings(
+                str(ch.get("model") or ""), tot_tok, api_base=ch.get("api_base")
+            )
+            ch["savings_estimate"] = {
+                "day": save_day,
+                "total": save_tot,
+                "source": save_src,
+                "size_billions": pricing.infer_model_size_billions(str(ch.get("model") or "")),
+            }
+        except Exception:
+            ch["estimated_spend"] = None
+            ch["savings_estimate"] = None
+        # 同 Key 多模型：额度按账号（env）展示文档限额，不按单模型 config rpm 拆分
         ch["rate_limits"] = quota_catalog.build_rate_limits(
             ch.get("env_var"),
-            ch.get("rpm_limit"),
+            None if ch.get("quota_shared") else ch.get("rpm_limit"),
             usage=ch["usage"],
+            quota_kind=ch.get("free_quota_kind"),
         )
+        if ch.get("quota_shared"):
+            note = (ch["rate_limits"].get("note_zh") or "").strip()
+            shared_tip = "同一 API Key 下所有模型/档位共用额度。"
+            if shared_tip not in note:
+                ch["rate_limits"]["note_zh"] = (
+                    f"{shared_tip}{note}" if note else shared_tip
+                )
         try:
-            ch["smoothness"] = await usage_tracker.get_smoothness(ch["usage_key"])
+            # 顺畅度优先新键；若几乎无样本再试旧键
+            smooth = await usage_tracker.get_smoothness(uk)
+            if (
+                not smooth.get("available")
+                or smooth.get("label_level") == "unknown"
+            ) and ch.get("legacy_usage_key"):
+                smooth_legacy = await usage_tracker.get_smoothness(ch["legacy_usage_key"])
+                if smooth_legacy.get("available"):
+                    smooth = smooth_legacy
+            ch["smoothness"] = smooth
         except Exception:
             ch["smoothness"] = {
                 "available": False,
@@ -674,7 +793,12 @@ async def list_channels():
 
         # 最近一次连通性（检查连接 / 保存 Key 探测）
         company_id = ch.get("company_id") or ch.get("env_var") or ""
-        conn = connection_status_store.get_company(company_id) or {}
+        # 多账号是独立面板：优先读取账号 env 的探测状态；旧数据才回退公司级。
+        conn = (
+            connection_status_store.get_company(ch.get("env_var") or "")
+            or connection_status_store.get_company(company_id)
+            or {}
+        )
         ch["connection_ok"] = conn.get("ok") if conn else None
         ch["connection_checked_at"] = conn.get("checked_at")
         ch["connection_message"] = conn.get("message") or ""
@@ -725,6 +849,141 @@ async def put_settings(body: SettingsUpdateRequest):
         return settings_store.update_settings(body.model_dump(exclude_none=True))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _routing_control_payload() -> dict:
+    try:
+        from gateway import llm_classifier
+        status = llm_classifier.classifier_status()
+    except Exception as exc:
+        logger.exception("读取分诊配置失败")
+        status = {
+            "mode": "auto",
+            "source_env": "",
+            "model": (os.environ.get("CLASSIFIER_MODEL") or "").strip(),
+            "api_base": (os.environ.get("CLASSIFIER_API_BASE") or "").strip(),
+            "exclusive": True,
+            "has_dedicated": bool((os.environ.get("CLASSIFIER_API_KEY") or "").strip()
+                                  or (os.environ.get("CLASSIFIER_SOURCE_ENV") or "").strip()),
+            "active_label": None,
+            "active_model": None,
+            "chain_len": 0,
+            "answer_verify_mode": (os.environ.get("ANSWER_VERIFY_MODE") or "hybrid").strip().lower(),
+            "known_source_envs": [],
+            "error": str(exc),
+        }
+
+    from gateway.env_file import read_env
+
+    env_map = {}
+    try:
+        env_map = read_env(channel_loader.ENV_PATH)
+    except Exception:
+        env_map = {}
+    configured = []
+    for name in status.get("known_source_envs") or []:
+        val = (env_map.get(name) or os.environ.get(name) or "").strip()
+        if val and not val.lower().startswith("dummy-"):
+            configured.append(name)
+    # 没有 known 列表时，从当前渠道 env 推断可选源
+    if not status.get("known_source_envs"):
+        try:
+            for ch in channel_loader.load_channels():
+                env = ch.get("env_var") or ""
+                if env and env not in (status.get("known_source_envs") or []):
+                    status.setdefault("known_source_envs", []).append(env)
+                    if ch.get("is_configured"):
+                        configured.append(env)
+        except Exception:
+            pass
+    status["configured_source_envs"] = sorted(set(configured))
+    return status
+
+
+@app.get("/api/routing-control")
+async def get_routing_control():
+    """当前智能分诊 / 答检配置（不含完整密钥）。"""
+    return _routing_control_payload()
+
+
+@app.put("/api/routing-control")
+async def put_routing_control(body: RoutingControlUpdate):
+    """保存分诊专用 API 与答检模式到 .env，并通知网关热加载。"""
+    mode = (body.mode or "auto").strip().lower()
+    if mode not in {"auto", "source_env", "dedicated_key"}:
+        raise HTTPException(status_code=400, detail="mode 必须是 auto|source_env|dedicated_key")
+
+    verify = (body.answer_verify_mode or "hybrid").strip().lower()
+    if verify not in {"hybrid", "local", "dedicated", "off"}:
+        raise HTTPException(status_code=400, detail="answer_verify_mode 无效")
+
+    try:
+        # 答检模式始终可写
+        channel_loader.write_env_var("ANSWER_VERIFY_MODE", verify)
+        exclusive = "true" if (body.exclusive is None or body.exclusive) else "false"
+        channel_loader.write_env_var("CLASSIFIER_EXCLUSIVE", exclusive)
+
+        if body.model is not None:
+            channel_loader.write_env_var("CLASSIFIER_MODEL", (body.model or "").strip())
+        if body.api_base is not None:
+            channel_loader.write_env_var("CLASSIFIER_API_BASE", (body.api_base or "").strip())
+
+        if mode == "auto":
+            channel_loader.write_env_var("CLASSIFIER_SOURCE_ENV", "")
+            # 不强制清空专用 Key（用户可能只想临时切回自动）；清空 source 即可
+            # 若存在 CLASSIFIER_API_KEY 且用户明确选 auto，则清空以免独占
+            channel_loader.write_env_var("CLASSIFIER_API_KEY", "")
+        elif mode == "source_env":
+            source = (body.source_env or "").strip().upper()
+            if not source or not source.replace("_", "").isalnum():
+                raise HTTPException(status_code=400, detail="请选择有效的渠道环境变量")
+            channel_loader.write_env_var("CLASSIFIER_SOURCE_ENV", source)
+            channel_loader.write_env_var("CLASSIFIER_API_KEY", "")
+        else:  # dedicated_key
+            channel_loader.write_env_var("CLASSIFIER_SOURCE_ENV", "")
+            if body.api_key is not None and str(body.api_key).strip():
+                key = str(body.api_key).strip()
+                if any(c in key for c in ("\r", "\n", "\x00")):
+                    raise HTTPException(status_code=400, detail="Key 不能含换行")
+                channel_loader.write_env_var("CLASSIFIER_API_KEY", key)
+            else:
+                # 允许只改 model/base，保留原 Key
+                existing = (os.environ.get("CLASSIFIER_API_KEY") or "").strip()
+                if not existing:
+                    # 再读 .env
+                    from gateway.env_file import read_env
+                    existing = (read_env(channel_loader.ENV_PATH).get("CLASSIFIER_API_KEY") or "").strip()
+                if not existing:
+                    raise HTTPException(status_code=400, detail="独立专用 Key 模式需要填写 API Key")
+    except HTTPException:
+        raise
+    except (OSError, ValueError) as exc:
+        logger.exception("写入分诊配置失败")
+        raise HTTPException(status_code=500, detail=f"写入 .env 失败：{exc}") from exc
+
+    # 立刻注入本进程，便于 GET 状态即时反映；网关靠 signal 热加载
+    os.environ["ANSWER_VERIFY_MODE"] = verify
+    os.environ["CLASSIFIER_EXCLUSIVE"] = exclusive
+    if body.model is not None:
+        os.environ["CLASSIFIER_MODEL"] = (body.model or "").strip()
+    if body.api_base is not None:
+        os.environ["CLASSIFIER_API_BASE"] = (body.api_base or "").strip()
+    if mode == "auto":
+        os.environ["CLASSIFIER_SOURCE_ENV"] = ""
+        os.environ["CLASSIFIER_API_KEY"] = ""
+    elif mode == "source_env":
+        os.environ["CLASSIFIER_SOURCE_ENV"] = (body.source_env or "").strip().upper()
+        os.environ["CLASSIFIER_API_KEY"] = ""
+    elif body.api_key is not None and str(body.api_key).strip():
+        os.environ["CLASSIFIER_API_KEY"] = str(body.api_key).strip()
+        os.environ["CLASSIFIER_SOURCE_ENV"] = ""
+
+    try:
+        env_sync.request_reload()
+    except Exception as exc:
+        logger.warning("通知网关热加载失败: %s", exc)
+
+    return _routing_control_payload()
 
 
 @app.post("/api/gateway/probe")
@@ -1192,8 +1451,7 @@ async def update_priority(channel_id: str, body: PriorityUpdateRequest):
     """手动设置某个渠道在它所属档位（弱/中/强）内部的优先级。
 
     数字越大越优先——这只影响 LiteLLM Router 在同一个档位里挑选具体
-    渠道时的倾向，不影响档位本身（弱/中/强）的判断，那是 config.yaml
-    里 model_name 分组决定的事，不通过这个接口改。
+    渠道时的倾向。档位本身请用 /tier 接口由用户自选。
     """
     channel = channel_loader.find_channel(channel_id)
     if channel is None:
@@ -1229,6 +1487,72 @@ async def update_priority(channel_id: str, body: PriorityUpdateRequest):
         "saved": True,
         "restart_required": False,
         "message": f"优先级已改为 {body.priority}，网关将热加载，无需 run.sh。",
+    }
+
+
+@app.post("/api/channels/{channel_id:path}/tier")
+async def update_channel_tier(channel_id: str, body: TierUpdateRequest):
+    """用户自选渠道档位（弱/中/强/顶级）。
+
+    写入 config.yaml 主池 model_name，并持久化到 state/tier-overrides.json，
+    避免目录刷新把选择冲掉。智能路由会按新档位调度。
+    """
+    channel = channel_loader.find_channel(channel_id)
+    if channel is None:
+        raise HTTPException(status_code=404, detail="渠道不存在")
+
+    try:
+        new_pool = tier_overrides.normalize_pool(body.tier)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    old_pool = channel["tier_pool"]
+    if old_pool != new_pool:
+        ok = config_editor.update_tier(
+            channel_loader.CONFIG_PATH,
+            pool=old_pool,
+            model=channel["model"],
+            api_base=channel["api_base"],
+            env_var=channel["env_var"],
+            new_pool=new_pool,
+        )
+        if not ok:
+            raise HTTPException(
+                status_code=409,
+                detail="没能在 config.yaml 里唯一定位到这个渠道，没有修改任何内容",
+            )
+        # 优先级覆盖按 (pool, model, …) 索引：池变更时迁移
+        old_pri = priority_overrides.get_priority(
+            old_pool, channel["model"], channel["api_base"], channel["env_var"]
+        )
+        if old_pri is not None:
+            priority_overrides.set_priority(
+                new_pool,
+                channel["model"],
+                channel["api_base"],
+                channel["env_var"],
+                old_pri,
+            )
+
+    tier_overrides.set_pool(
+        channel["model"],
+        channel["api_base"],
+        channel["env_var"],
+        new_pool,
+    )
+
+    try:
+        env_sync.request_reload()
+    except Exception:
+        pass
+
+    label = tier_overrides.POOL_TO_LABEL.get(new_pool, new_pool)
+    return {
+        "saved": True,
+        "restart_required": False,
+        "tier": label,
+        "tier_pool": new_pool,
+        "message": f"档位已改为「{label}」，网关将热加载。",
     }
 
 
@@ -1283,6 +1607,229 @@ async def add_company_account(company_id: str):
     }
 
 
+def _normalize_custom_api_base(value: str) -> str:
+    """规范用户粘贴的 OpenAI 兼容地址，拒绝凭据和非 HTTP 协议。"""
+    raw = (value or "").strip().rstrip("/")
+    parsed = urlsplit(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("API 地址必须是完整的 http:// 或 https:// URL")
+    if parsed.username or parsed.password or parsed.fragment or parsed.query:
+        raise ValueError("API 地址不能包含账号、密码、查询参数或锚点")
+    path = parsed.path.rstrip("/")
+    for suffix in ("/chat/completions", "/models"):
+        if path.endswith(suffix):
+            path = path[: -len(suffix)]
+    return urlunsplit((parsed.scheme, parsed.netloc, path, "", "")).rstrip("/")
+
+
+def _custom_model_pool(model: str, api_base: str) -> tuple[str, str, str]:
+    """依据厂商限制和模型名给自定义模型分档。"""
+    text = (model or "").lower()
+    host = (urlsplit(api_base).hostname or "").lower()
+    if any(name in host for name in ("groq.com", "sambanova.ai", "siliconflow.cn")):
+        return "fast-pool", "弱", "该厂商按策略只允许进入弱档"
+    if "gemini-3.5-flash" in text:
+        return "strong-model-pool", "强", "Gemini 3.5 Flash 至少按强档使用"
+    if any(token in text for token in (
+        "405b", "120b", "235b", "550b", "671b", "reasoner", "deepseek-r1",
+        "deepseek-v3", "mistral-large", "minimax-m2", "glm-5", "opus",
+    )):
+        return "elite-model-pool", "顶级", "名称显示为旗舰/百亿以上推理模型"
+    if any(token in text for token in (
+        "32b", "34b", "70b", "72b", "qwen-plus", "mistral-medium",
+        "gemini-3", "flash", "sonnet",
+    )):
+        return "strong-model-pool", "强", "名称显示为强推理或 31B–100B 模型"
+    if any(token in text for token in (
+        "0.5b", "1b", "2b", "3b", "7b", "8b", "mini", "lite", "small",
+    )):
+        return "fast-pool", "弱", "名称显示为轻量模型"
+    return "free-pool", "中", "无法可靠判断参数量，保守放入中档"
+
+
+def _filter_chat_model_ids(payload: object) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+    rows = payload.get("data") or payload.get("models") or []
+    if not isinstance(rows, list):
+        return []
+    blocked = (
+        "embed", "rerank", "whisper", "tts", "speech", "image", "vision-embed",
+        "moderation", "transcribe",
+    )
+    found: list[str] = []
+    for row in rows:
+        value = row.get("id") or row.get("name") if isinstance(row, dict) else row
+        model = str(value or "").strip()
+        if model.startswith("models/"):
+            model = model.split("/", 1)[1]
+        if not model or len(model) > 300 or any(token in model.lower() for token in blocked):
+            continue
+        if model not in found:
+            found.append(model)
+    return found[:200]
+
+
+async def _discover_custom_models(api_base: str, api_key: str) -> list[dict]:
+    base = _normalize_custom_api_base(api_base)
+    try:
+        response = await _proxy_client.get(
+            f"{base}/models",
+            headers={"Authorization": f"Bearer {api_key.strip()}"},
+            timeout=15,
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"模型发现失败：{type(exc).__name__}") from exc
+    if response.status_code >= 400:
+        raise HTTPException(
+            status_code=400,
+            detail=f"模型发现失败：上游返回 HTTP {response.status_code}，请检查地址和 Key",
+        )
+    try:
+        model_ids = _filter_chat_model_ids(response.json())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="上游 /models 没有返回 JSON") from exc
+    if not model_ids:
+        raise HTTPException(status_code=400, detail="没有发现可用于聊天的模型")
+    rank = {"elite-model-pool": 3, "strong-model-pool": 2, "free-pool": 1, "fast-pool": 0}
+    models = []
+    for model_id in model_ids:
+        pool, tier, reason = _custom_model_pool(model_id, base)
+        models.append({"id": model_id, "pool": pool, "tier": tier, "reason": reason})
+    models.sort(key=lambda item: (-rank[item["pool"]], item["id"].lower()))
+    return models
+
+
+@app.post("/api/custom-providers/discover")
+async def discover_custom_provider(body: CustomApiRequest):
+    base = _normalize_custom_api_base(body.api_base)
+    models = await _discover_custom_models(base, body.api_key)
+    return {
+        "api_base": base,
+        "models": models,
+        "recommended": models[0],
+        "message": f"发现 {len(models)} 个聊天模型，已推荐能力最高的一项",
+    }
+
+
+@app.post("/api/custom-providers/parse-snippet")
+async def parse_custom_provider_snippet(body: CustomApiSnippetRequest):
+    """智脑解析：粘贴文档/curl → 抽出 Base URL、Key、模型，可选再拉 /models。"""
+    from .api_snippet_parser import parse_provider_snippet
+
+    parsed = parse_provider_snippet(body.snippet)
+    models: list[dict] = []
+    discover_error: Optional[str] = None
+    base = (parsed.get("api_base") or "").strip()
+    key = (parsed.get("api_key") or "").strip()
+
+    # 规范化 base（允许解析器只给根路径）
+    if base:
+        try:
+            base = _normalize_custom_api_base(base)
+            parsed["api_base"] = base
+        except ValueError as exc:
+            discover_error = str(exc)
+            base = ""
+
+    if body.discover and base and key:
+        try:
+            models = await _discover_custom_models(base, key)
+        except HTTPException as exc:
+            discover_error = (
+                exc.detail if isinstance(exc.detail, str) else "模型发现失败"
+            )
+        except Exception as exc:
+            discover_error = f"{type(exc).__name__}: {exc}"
+
+    # 文档里写到的模型也并入列表（即使 /models 不可用）
+    mentioned = list(parsed.get("models_mentioned") or [])
+    if parsed.get("model") and parsed["model"] not in mentioned:
+        mentioned.insert(0, parsed["model"])
+    known_ids = {m["id"] for m in models}
+    for mid in mentioned:
+        if mid in known_ids:
+            continue
+        pool, tier, reason = _custom_model_pool(mid, base or "")
+        models.append({
+            "id": mid,
+            "pool": pool,
+            "tier": tier,
+            "reason": reason + "（来自粘贴文档）",
+            "from_snippet": True,
+        })
+        known_ids.add(mid)
+
+    recommended = models[0] if models else None
+    if recommended and not parsed.get("model"):
+        parsed["model"] = recommended["id"]
+
+    return {
+        "parsed": parsed,
+        "models": models,
+        "recommended": recommended,
+        "discover_error": discover_error,
+        "message": (
+            f"已解析：{parsed.get('provider_name') or '未知提供方'}"
+            + (f" · 发现 {len(models)} 个模型" if models else " · 请确认模型名")
+            + (f" · {discover_error}" if discover_error and not models else "")
+        ),
+    }
+
+
+@app.post("/api/custom-providers")
+async def add_custom_provider(body: CustomApiAddRequest):
+    base = _normalize_custom_api_base(body.api_base)
+    model_id = body.model.strip()
+    match: Optional[dict] = None
+    # 优先用上游 /models；失败则允许文档里写明的模型（粘贴接入场景）
+    try:
+        models = await _discover_custom_models(base, body.api_key)
+        match = next((item for item in models if item["id"] == model_id), None)
+    except HTTPException:
+        models = []
+        match = None
+    if match is None:
+        pool = (body.pool or "").strip()
+        if pool not in {
+            "fast-pool", "free-pool", "strong-model-pool", "elite-model-pool",
+        }:
+            pool, tier, reason = _custom_model_pool(model_id, base)
+        else:
+            tier = {
+                "fast-pool": "弱",
+                "free-pool": "中",
+                "strong-model-pool": "强",
+                "elite-model-pool": "顶级",
+            }[pool]
+            reason = "用户/文档指定"
+        match = {"id": model_id, "pool": pool, "tier": tier, "reason": reason}
+    try:
+        result = config_editor.add_custom_channel(
+            channel_loader.CONFIG_PATH,
+            provider_name=body.provider_name.strip(),
+            api_base=base,
+            api_key=body.api_key,
+            model=match["id"],
+            pool=match["pool"],
+        )
+        channel_loader.write_env_var(result["env_var"], body.api_key.strip())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        env_sync.request_reload()
+    except Exception:
+        pass
+    return {
+        **result,
+        "tier": match["tier"],
+        "message": (
+            f"已添加 {body.provider_name.strip()} / {match['id']}，自动归入{match['tier']}档；"
+            "网关将热加载。"
+        ),
+    }
+
+
 @app.post("/api/channels/{channel_id:path}/model")
 async def update_channel_model(channel_id: str, body: ModelUpdateRequest):
     """让用户填写上游实际提供的模型 ID（无需 gemini/ openai/ 等 LiteLLM 前缀）。"""
@@ -1316,6 +1863,12 @@ async def update_channel_model(channel_id: str, body: ModelUpdateRequest):
 
     priority_overrides.rename_model(
         channel["tier_pool"],
+        channel["model"],
+        stored,
+        channel["api_base"],
+        channel["env_var"],
+    )
+    tier_overrides.rename_model(
         channel["model"],
         stored,
         channel["api_base"],
@@ -1379,6 +1932,42 @@ async def unflag_optimal(channel_id: str):
     if not ok:
         raise HTTPException(status_code=503, detail="Redis 不可用，无法取消限时优先标记")
     return {"saved": True, "message": "已取消限时优先标记，恢复正常的弱/中/强路由"}
+
+
+@app.delete("/api/channels/{channel_id:path}")
+async def delete_channel(channel_id: str):
+    """删除一个模型渠道；若账号已无模型，同时删除它在 .env 中的 Key。"""
+    channel = channel_loader.find_channel(channel_id)
+    if channel is None:
+        raise HTTPException(status_code=404, detail="渠道不存在")
+    ok = config_editor.delete_channel(
+        channel_loader.CONFIG_PATH,
+        pool=channel["tier_pool"],
+        model=channel["model"],
+        api_base=channel.get("api_base"),
+        env_var=channel.get("env_var"),
+    )
+    if not ok:
+        raise HTTPException(status_code=409, detail="无法唯一定位渠道，没有删除任何内容")
+    try:
+        await optimal_channels.clear_optimal(channel["channel_id"])
+    except Exception:
+        pass
+    env_removed = False
+    env_var = channel.get("env_var") or ""
+    if env_var:
+        remaining = channel_loader.load_channels()
+        if not any(item.get("env_var") == env_var for item in remaining):
+            env_removed = channel_loader.delete_env_var(env_var)
+    try:
+        env_sync.request_reload()
+    except Exception:
+        pass
+    return {
+        "deleted": True,
+        "env_removed": env_removed,
+        "message": "渠道已删除" + ("，账号 Key 也已清除" if env_removed else ""),
+    }
 
 
 @app.get("/api/optimal")
