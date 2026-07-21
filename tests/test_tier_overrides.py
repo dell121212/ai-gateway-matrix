@@ -22,7 +22,7 @@ class TierOverrideTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             target = Path(td) / "config.yaml"
             shutil.copy2(source, target)
-            model = "openai/coding-kimi-k3-free"
+            model = "openai/gpt-4o-mini"
             api_base = "https://aihubmix.com/v1"
             env_var = "AIHUBMIX_API_KEY"
 
