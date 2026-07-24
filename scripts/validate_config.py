@@ -3,18 +3,34 @@
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from collections import Counter
 from pathlib import Path
 import yaml
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+# 代码根（gateway/scripts/…）；用户可迁移数据可在 AI_GATEWAY_HOME。
+CODE_ROOT = Path(__file__).resolve().parents[1]
+ROOT = CODE_ROOT  # 兼容旧引用
+DATA_ROOT = Path(os.environ.get("AI_GATEWAY_HOME") or CODE_ROOT).expanduser().resolve()
+if str(CODE_ROOT) not in sys.path:
+    sys.path.insert(0, str(CODE_ROOT))
 
 from gateway import channel_ids  # noqa: E402 - 支持直接执行 scripts/validate_config.py
 from gateway.provider_registry import PRIMARY_POOLS, parse_env_ref  # noqa: E402
+
+
+def _user_or_code(name: str) -> Path:
+    """优先用户数据目录，其次代码根/templates。"""
+    for candidate in (
+        DATA_ROOT / name,
+        CODE_ROOT / "templates" / name,
+        CODE_ROOT / name,
+    ):
+        if candidate.is_file():
+            return candidate
+    return DATA_ROOT / name
 
 
 class UniqueKeyLoader(yaml.SafeLoader):
@@ -76,9 +92,9 @@ def validate() -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
     try:
-        config = load_strict(ROOT / "config.yaml")
-        manifest = load_strict(ROOT / "provider_manifest.yaml")
-        compose = load_strict(ROOT / "docker-compose.yml")
+        config = load_strict(_user_or_code("config.yaml"))
+        manifest = load_strict(_user_or_code("provider_manifest.yaml"))
+        compose = load_strict(CODE_ROOT / "docker-compose.yml")
     except Exception as exc:
         return [str(exc)], warnings
 
@@ -86,18 +102,18 @@ def validate() -> tuple[list[str], list[str]]:
     if not isinstance(model_list, list):
         return ["config.yaml 缺少 model_list"], warnings
 
-    # 根目录只放入口配置；运行时、运维和管理面必须保持分层。
-    root_python_files = sorted(path.name for path in ROOT.glob("*.py"))
+    # 代码根只放入口配置；运行时、运维和管理面必须保持分层。
+    root_python_files = sorted(path.name for path in CODE_ROOT.glob("*.py"))
     if root_python_files:
         errors.append(f"根目录不应堆放 Python 文件: {root_python_files}")
     required_paths = (
-        ROOT / "gateway" / "__init__.py",
-        ROOT / "gateway" / "custom_router_hook.py",
-        ROOT / "scripts" / "__init__.py",
-        ROOT / "scripts" / "test_gateway.py",
-        ROOT / "dashboard" / "__init__.py",
+        CODE_ROOT / "gateway" / "__init__.py",
+        CODE_ROOT / "gateway" / "custom_router_hook.py",
+        CODE_ROOT / "scripts" / "__init__.py",
+        CODE_ROOT / "scripts" / "test_gateway.py",
+        CODE_ROOT / "dashboard" / "__init__.py",
     )
-    missing_paths = [str(path.relative_to(ROOT)) for path in required_paths if not path.is_file()]
+    missing_paths = [str(path.relative_to(CODE_ROOT)) for path in required_paths if not path.is_file()]
     if missing_paths:
         errors.append(f"项目分层缺少必需文件: {missing_paths}")
 
@@ -105,14 +121,18 @@ def validate() -> tuple[list[str], list[str]]:
     if "gateway.custom_router_hook.proxy_handler_instance" not in callbacks:
         errors.append("LiteLLM 未指向 gateway 包中的自定义路由 Hook")
 
+    env_example_path = _user_or_code(".env.example")
     for service_name, service in (compose.get("services") or {}).items():
         for mount in (service or {}).get("volumes") or []:
             if not isinstance(mount, str) or not mount.startswith("./"):
                 continue
             source = mount.split(":", 1)[0]
-            if source == "./.env" and (ROOT / ".env.example").is_file():
-                continue  # run.sh 首次启动时会从模板安全创建
-            if not (ROOT / source).exists():
+            # 用户侧相对路径相对 AI_GATEWAY_HOME / 项目根；data/* 可在首次启动时创建
+            if source == "./.env" and env_example_path.is_file():
+                continue
+            if source.startswith("./data/"):
+                continue
+            if not (DATA_ROOT / source[2:]).exists() and not (CODE_ROOT / source[2:]).exists():
                 errors.append(f"Docker 服务 {service_name} 挂载了不存在的路径: {source}")
 
     primary = [item for item in model_list if item.get("model_name") in PRIMARY_POOLS]
@@ -161,7 +181,7 @@ def validate() -> tuple[list[str], list[str]]:
     if missing_manifest:
         errors.append(f"provider_manifest.yaml 缺少凭据: {missing_manifest}")
 
-    env_text = (ROOT / ".env.example").read_text(encoding="utf-8")
+    env_text = env_example_path.read_text(encoding="utf-8")
     env_example = set(re.findall(r"^([A-Z][A-Z0-9_]*)=", env_text, re.M))
     missing_env = sorted(env_refs - env_example)
     if missing_env:
@@ -183,11 +203,11 @@ def validate() -> tuple[list[str], list[str]]:
     if cycle:
         errors.append("fallback 存在环: " + " -> ".join(cycle))
 
-    image = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    image = (CODE_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     if "litellm:main-latest" in image:
         errors.append("LiteLLM Docker 镜像仍使用 main-latest")
 
-    dockerignore_path = ROOT / ".dockerignore"
+    dockerignore_path = CODE_ROOT / ".dockerignore"
     if not dockerignore_path.is_file():
         errors.append("缺少 .dockerignore，Docker 构建可能上传 .env 密钥")
     else:

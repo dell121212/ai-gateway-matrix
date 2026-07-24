@@ -35,6 +35,12 @@ logs/
 parts/
 __pycache__/
 *.py[cod]
+# Compose 可迁移数据目录（源码开发时与仓库同根）
+/data/
+# 许可证与签发私钥（公钥 ai-gateway.pub 可提交）
+/license/
+*.lic
+licensing/**/*.key
 # Python
 .Python
 sdist/

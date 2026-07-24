@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# 系统入口：转发到安装树中的 run.sh
+set -Eeuo pipefail
+exec /usr/share/ai-gateway-matrix/run.sh "$@"

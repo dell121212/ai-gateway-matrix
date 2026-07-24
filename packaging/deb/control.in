@@ -1,0 +1,20 @@
+Package: ai-gateway-matrix
+Version: @VERSION@
+Section: net
+Priority: optional
+Architecture: all
+Maintainer: AI Gateway Matrix maintainers <noreply@localhost>
+Depends: bash (>= 4.0), coreutils, docker.io | docker-ce, openssl | python3, python3-gi, gir1.2-gtk-3.0, gir1.2-webkit2-4.1 | gir1.2-webkit2-4.0, minisign, age, jq
+Recommends: docker-compose-v2 | docker-compose-plugin
+Suggests: python3-yaml
+Homepage: https://github.com/dell121212/Private-API
+Description: Multi-provider OpenAI-compatible AI gateway (LiteLLM)
+ AI Gateway Matrix unifies free/trial LLM APIs behind one OpenAI-compatible
+ endpoint with smart routing, a local Chinese dashboard, Redis usage
+ tracking and Docker-based deployment.
+ .
+ System code is installed under /usr/share/ai-gateway-matrix.
+ All user data (API keys, config.yaml, state, Redis/Postgres files) lives
+ in a single portable directory:
+   ${XDG_CONFIG_HOME:-$HOME/.config}/ai-gateway-matrix
+ Override with AI_GATEWAY_HOME. Copy that directory to migrate machines.

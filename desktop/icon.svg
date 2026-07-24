@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="AI Gateway Matrix">
+  <defs>
+    <linearGradient id="g" x1="16" y1="12" x2="112" y2="116" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0A84FF"/>
+      <stop offset="1" stop-color="#5E5CE6"/>
+    </linearGradient>
+    <linearGradient id="s" x1="40" y1="36" x2="96" y2="100" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.55"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="112" height="112" rx="28" fill="url(#g)"/>
+  <path d="M40 78V50c0-6.6 5.4-12 12-12h8l16-12v24h4c6.6 0 12 5.4 12 12v28c0 6.6-5.4 12-12 12H52c-6.6 0-12-5.4-12-12z" fill="url(#s)"/>
+  <circle cx="58" cy="62" r="5" fill="#0A84FF"/>
+  <circle cx="78" cy="62" r="5" fill="#5E5CE6"/>
+  <path d="M54 78c4 6 16 6 20 0" stroke="#0A84FF" stroke-width="4" stroke-linecap="round" fill="none"/>
+</svg>

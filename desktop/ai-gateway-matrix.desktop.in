@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=AI Gateway Matrix
+Name[zh_CN]=AI Gateway Matrix
+GenericName=AI API Gateway
+GenericName[zh_CN]=AI 接口网关
+Comment=Multi-provider OpenAI-compatible gateway with desktop console
+Comment[zh_CN]=多渠道 OpenAI 兼容网关 · 桌面控制台
+Exec=@BINDIR@/ai-gateway-matrix app
+Icon=@ICON@
+Terminal=false
+Categories=Network;Development;Utility;
+StartupNotify=true
+StartupWMClass=ai-gateway-matrix
+Keywords=AI;LLM;API;Gateway;OpenAI;

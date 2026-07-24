@@ -50,12 +50,74 @@
 
 ## 快速开始
 
+### 方式 A：Debian/Ubuntu 安装包（推荐 Linux）
+
+```bash
+./packaging/build-deb.sh          # 产物：dist/ai-gateway-matrix_*.deb
+sudo dpkg -i dist/ai-gateway-matrix_*.deb
+# 依赖未满足时：sudo apt-get install -f
+
+ai-gateway-matrix app             # 打开桌面应用窗口（推荐）
+# 应用菜单亦可搜索 “AI Gateway Matrix”
+ai-gateway-matrix start           # 仅启动后端，不弹窗
+```
+
+桌面窗使用系统 **WebKitGTK** 加载本机控制台（无浏览器地址栏/标签栏），外链仍用系统浏览器打开。
+依赖：`python3-gi gir1.2-gtk-3.0 gir1.2-webkit2-4.1`（deb 已声明）。
+
+**可迁移用户数据**（Key、配置、state、Redis/Postgres 都在同一目录）：
+
+| 项 | 路径 |
+|----|------|
+| 默认 | `~/.config/ai-gateway-matrix` |
+| 覆盖 | `export AI_GATEWAY_HOME=/path/to/dir` |
+
+目录内：`.env`、`config.yaml`、`provider_manifest.yaml`、`state/`、`data/redis/`、`data/postgres/`。
+换机：`stop` → 打包整个目录 → 新机安装同版本 deb → 解压到相同路径 → `start`。
+
+```bash
+ai-gateway-matrix home
+ai-gateway-matrix status
+ai-gateway-matrix logs -f
+ai-gateway-matrix stop
+```
+
+系统代码在 `/usr/share/ai-gateway-matrix`；密钥与可写状态**只**在用户数据目录。
+
+### 离线授权（B 端，借鉴 AUTO-R）
+
+正式包内置验签公钥后：**未激活不启动** Docker / 桌面控制台。
+
+| 场景 | 行为 |
+|------|------|
+| 客户首次启动 | 打印/展示设备申请码 `AG1....`，不 `compose up` |
+| 授权人 | `bash licensing/init_issuer.sh` 一次；`bash licensing/issue_license.sh` 签发 `.lic` |
+| 客户激活 | `.lic` 放到桌面 → 再 `start`/`app`，自动导入并删运输副本 |
+| **源码开发** | 无 `licensing/public/ai-gateway.pub` → 自动跳过授权 |
+| 临时豁免 | `AI_GATEWAY_LICENSE_BYPASS=1 ./run.sh start` |
+
+```bash
+./run.sh license request
+./run.sh license status
+./run.sh license import ~/桌面/xxx.lic
+```
+
+详情见 `licensing/README.md`。
+
+### 方式 B：源码 + Docker
+
 只需先安装并启动 Docker Engine 或 Docker Desktop（需包含 Docker Compose），
 项目本身无需手工安装 Python、Redis 或 PostgreSQL 依赖。在项目目录执行：
 
 ```bash
-./run.sh
+# 桌面窗口（需 WebKitGTK）
+./run.sh app
+
+# 或仅服务
+./run.sh start
 ```
+
+源码模式下默认数据目录为仓库根；也可用 `AI_GATEWAY_HOME` 指到别处。
 
 首次运行会自动完成以下工作：
 
@@ -64,7 +126,7 @@
 - 校验配置，下载/构建所需 Docker 镜像；
 - 启动全部服务并等待健康检查通过。
 
-脚本可重复执行，不会覆盖已有 `.env` 或数据卷。上游模型 API Key 仍需要
+脚本可重复执行，不会覆盖已有 `.env` 或用户数据目录。上游模型 API Key 仍需要
 在 `.env` 或仪表盘中至少填写一个。升级后再次运行时，脚本会把新版
 `.env.example` 中新增的配置项补入 `.env`，但绝不覆盖已有值。如果未安装 Docker，
 脚本会给出对应安装入口。

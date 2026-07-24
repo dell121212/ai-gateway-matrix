@@ -5,7 +5,7 @@
 <meta http-equiv="Pragma" content="no-cache" />
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>AI-API</title>
+<title>AI Gateway Matrix</title>
 <style>
   :root {
     --bg: #f5f5f7;
@@ -41,6 +41,36 @@
                  "PingFang SC", "Helvetica Neue", Arial, sans-serif;
     -webkit-font-smoothing: antialiased;
     min-height: 100vh;
+  }
+
+  /* 桌面 WebView 壳（?app=1）：更贴窗口、减少浏览器页边距感 */
+  html.app-shell, html.app-shell body {
+    height: 100%;
+    overflow: hidden;
+  }
+  body.app-shell {
+    min-height: 100%;
+    user-select: none;
+  }
+  body.app-shell input,
+  body.app-shell textarea,
+  body.app-shell select,
+  body.app-shell [contenteditable="true"] {
+    user-select: text;
+  }
+  body.app-shell .page {
+    max-width: none;
+    height: 100%;
+    padding: 20px 22px 28px;
+    overflow: auto;
+  }
+  body.app-shell .hero {
+    margin-bottom: 14px;
+    padding: 12px 16px;
+    border-radius: 14px;
+  }
+  body.app-shell .hero h1 {
+    font-size: 22px;
   }
 
   .page {
@@ -1310,6 +1340,21 @@
 </style>
 </head>
 <body>
+<script>
+/* 桌面应用壳：?app=1 或被 WebView 打开时启用 app-shell 样式 */
+(function () {
+  try {
+    const q = new URLSearchParams(location.search);
+    const ua = navigator.userAgent || "";
+    const isApp = q.get("app") === "1" || /AIGatewayMatrixApp/i.test(ua);
+    if (isApp) {
+      document.documentElement.classList.add("app-shell");
+      document.body.classList.add("app-shell");
+      document.title = "AI Gateway Matrix";
+    }
+  } catch (_) {}
+})();
+</script>
   <div class="page">
     <div class="hero">
       <div>

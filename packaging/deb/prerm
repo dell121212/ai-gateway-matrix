@@ -1,0 +1,5 @@
+#!/bin/sh
+set -e
+# 不自动 docker compose down：用户数据与容器可能仍在使用。
+# 卸载只移除 /usr/share 与 /usr/bin，不删除 ~/.config/ai-gateway-matrix。
+exit 0

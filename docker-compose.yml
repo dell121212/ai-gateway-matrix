@@ -1,23 +1,11 @@
 # ════════════════════════════════════════════════════════════════
-#  AI Gateway Matrix — Docker Compose (v3 — 新增浏览器仪表盘)
+#  AI Gateway Matrix — Docker Compose
 #
-#  v3 新增：
-#    · dashboard 服务：浏览器仪表盘，填 API Key + 看用量/重置倒计时，
-#      单独的 Dockerfile（dashboard/Dockerfile），跟主服务共用同一个 redis。
-#    · 网关核心代码统一收纳在 gateway/ Python 包中。
+#  路径约定（由 run.sh / ai-gateway-matrix 注入）：
+#    AI_GATEWAY_CODE  程序代码目录（源码根或 /usr/share/ai-gateway-matrix）
+#    --project-directory 用户数据目录：./.env ./config.yaml ./state ./data
 #
-#  v2 修复清单（对照 Manus 验证报告）：
-#    1. [Manus 报告] Docker 启动失败（iptables raw 表缺失）——这是沙盒
-#       环境的内核限制，不是项目 bug。但在真实 Linux 主机上，以下改进
-#       能让部署更健壮：
-#    2. 新增 redis / postgres 的 healthcheck，并用 depends_on condition
-#       确保主服务在依赖就绪后才启动（原版只声明 depends_on 但不等健康）。
-#    3. 新增 PYTHONPATH=/app，确保 gateway 包能被正确 import
-#       （LiteLLM 镜像默认 WORKDIR 是 /app，但 PYTHONPATH 不一定包含它）。
-#    4. 新增 LITELLM_LOG=INFO，让日志级别可控。
-#    5. 新增 healthcheck 给主服务，方便编排工具判断状态。
-#    6. 新增 restart 策略的退避参数（默认 Docker 行为已足够，显式声明更清晰）。
-#    7. 端口绑定保持 127.0.0.1，个人用场景不对外暴露。
+#  用户侧相对路径均相对「可迁移数据目录」，整目录拷贝即可换机。
 # ════════════════════════════════════════════════════════════════
 
 services:
@@ -32,7 +20,7 @@ services:
       - "4000"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
-      - ./gateway:/app/gateway:ro
+      - ${AI_GATEWAY_CODE:-.}/gateway:/app/gateway:ro
       - ./provider_manifest.yaml:/app/provider_manifest.yaml:ro
       - ./state:/app/state:ro
       # 仪表盘写入的 Key 在此文件；网关需能读到并热加载（env_file 只在启动时注入一次）
@@ -46,9 +34,9 @@ services:
       - DATABASE_URL=postgresql://litellm:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required; run ./run.sh}@postgres:5432/litellm
       # 确保 /app 在 Python 搜索路径里，gateway 包才能被 import
       - PYTHONPATH=/app
-      # v2 新增：日志级别（DEBUG / INFO / WARNING / ERROR）
+      # 日志级别（DEBUG / INFO / WARNING / ERROR）
       - LITELLM_LOG=INFO
-      # v2 新增：关闭遥测上报（隐私 + 减少不必要的网络请求）
+      # 关闭遥测上报（隐私 + 减少不必要的网络请求）
       - LITELLM_TELEMETRY=False
       # 主配置保留全部供应商供仪表盘编辑；启动器只把已填写凭据的 deployment
       # 写进 /app 运行时配置，避免 LiteLLM 选中空 API Key；LiteLLM 也会以
@@ -66,7 +54,6 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
-    # v2 新增：主服务健康检查
     healthcheck:
       test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:4000/health/liveliness', timeout=5)"]
       interval: 30s
@@ -79,11 +66,11 @@ services:
     container_name: ai-gateway-matrix-redis
     restart: unless-stopped
     volumes:
-      - redis-data:/data
+      # 绑定到用户数据目录，随 AI_GATEWAY_HOME 一起迁移
+      - ./data/redis:/data
     environment:
       - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD is required; run ./run.sh}
     command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$${REDIS_PASSWORD}\""]
-    # v2 新增：健康检查
     healthcheck:
       test: ["CMD-SHELL", "REDISCLI_AUTH=\"$${REDIS_PASSWORD}\" redis-cli ping"]
       interval: 10s
@@ -100,8 +87,7 @@ services:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required; run ./run.sh}
       - POSTGRES_DB=litellm
     volumes:
-      - postgres-data:/var/lib/postgresql/data
-    # v2 新增：健康检查
+      - ./data/postgres:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U litellm -d litellm"]
       interval: 10s
@@ -109,17 +95,10 @@ services:
       retries: 5
       start_period: 10s
 
-  # v5 新增：浏览器仪表盘（渠道 API Key 填写 + 用量/重置倒计时展示）
-  # v7 更新：config.yaml 从只读改成读写——"手动设置优先级"功能需要往
-  # 里面写 priority 字段（改动都是通过 dashboard/config_editor.py 做
-  # 精确定位后的最小化文本替换，不会整个文件重写，冲突风险很低，但
-  # 如果你手动同时在别处编辑 config.yaml，请避免和仪表盘操作同时进行）。
-  # 跟 ai-gateway-matrix 主服务是两个独立容器，共用同一个 redis 做用量统计的
-  # 数据交换；只挂载它需要的那几个文件，不挂载整个项目目录，减小误改到
-  # 不该动的文件的可能性。
+  # 仪表盘：填 Key、看用量；config/.env/state 写用户数据目录
   dashboard:
     build:
-      context: .
+      context: ${AI_GATEWAY_CODE:-.}
       dockerfile: dashboard/Dockerfile
     container_name: ai-gateway-matrix-dashboard
     restart: unless-stopped
@@ -134,12 +113,12 @@ services:
       - "127.0.0.1:8080:8080"   # 兼容旧书签；与 4000 是同一个界面
     volumes:
       - ./config.yaml:/app/config.yaml   # 读写：优先级修改功能需要写入这个文件
-      - ./gateway:/app/gateway:ro
+      - ${AI_GATEWAY_CODE:-.}/gateway:/app/gateway:ro
       - ./provider_manifest.yaml:/app/provider_manifest.yaml:ro
       # state 需可写：客户端密钥登记簿、UI 设置（client-keys.json / ui-settings.json）
       - ./state:/app/state
       - ./.env:/app/.env            # 读写：仪表盘要往这里写你填的 key
-      - ./dashboard:/app/dashboard:ro
+      - ${AI_GATEWAY_CODE:-.}/dashboard:/app/dashboard:ro
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
@@ -164,7 +143,7 @@ services:
 
   provider-monitor:
     build:
-      context: .
+      context: ${AI_GATEWAY_CODE:-.}
       dockerfile: dashboard/Dockerfile
     container_name: ai-gateway-matrix-provider-monitor
     restart: unless-stopped
@@ -173,14 +152,14 @@ services:
       - .env
     # state 是宿主机绑定挂载目录。容器同时启用了 cap_drop: ALL，因此即使
     # 进程名义上是 root，也不能绕过宿主目录的 DAC 权限。显式使用启动
-    # run.sh 的用户身份，既能写入 ./state，也不需要 chmod 777 或 sudo。
+    # 脚本的用户身份，既能写入 ./state，也不需要 chmod 777 或 sudo。
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     volumes:
       # 模型目录确认是改名时，autofix 需要精确更新对应 deployment。
       - ./config.yaml:/app/config.yaml
-      - ./gateway:/app/gateway:ro
-      - ./dashboard:/app/dashboard:ro
-      - ./scripts:/app/scripts:ro
+      - ${AI_GATEWAY_CODE:-.}/gateway:/app/gateway:ro
+      - ${AI_GATEWAY_CODE:-.}/dashboard:/app/dashboard:ro
+      - ${AI_GATEWAY_CODE:-.}/scripts:/app/scripts:ro
       - ./state:/app/state
       # Dashboard 可随时新增/轮换 Key；巡检每轮从该文件热加载，不能只依赖
       # 容器创建时冻结的 env_file 环境。
@@ -210,7 +189,3 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
-
-volumes:
-  redis-data:
-  postgres-data:

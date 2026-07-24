@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+case "$1" in
+  purge)
+    cat <<'EOF' >&2
+已 purge 软件包。用户数据目录未删除，如需清理请手动:
+  rm -rf "${XDG_CONFIG_HOME:-$HOME/.config}/ai-gateway-matrix"
+EOF
+    ;;
+esac
+exit 0
