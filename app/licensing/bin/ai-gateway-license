@@ -1,0 +1,350 @@
+#!/usr/bin/env bash
+# AI Gateway Matrix 离线许可证客户端：申请码、导入、验签、设备绑定。
+# 协议借鉴 AUTO-R（Minisign + age）；产品字段与前缀独立。
+
+set -euo pipefail
+umask 077
+
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+APP_ROOT="$(cd "${SELF_DIR}/../.." && pwd)"
+PUBLIC_KEY="${APP_ROOT}/licensing/public/ai-gateway.pub"
+VERSION_FILE="${APP_ROOT}/VERSION"
+BUILD_DATE_FILE="${APP_ROOT}/BUILD_DATE"
+
+# 与 run.sh 对齐：安装布局用 XDG 配置目录；源码布局默认仓库根；可 AI_GATEWAY_HOME 覆盖。
+resolve_home() {
+  if [ -n "${AI_GATEWAY_HOME:-}" ]; then
+    printf '%s\n' "${AI_GATEWAY_HOME}"
+    return
+  fi
+  if [ -f "${APP_ROOT}/.installed" ] || [ "${APP_ROOT}" = "/usr/share/ai-gateway-matrix" ]; then
+    printf '%s\n' "${XDG_CONFIG_HOME:-${HOME}/.config}/ai-gateway-matrix"
+    return
+  fi
+  # 源码布局：程序在 app/，用户数据在仓库 home/
+  if [ -d "${APP_ROOT}/../home" ]; then
+    printf '%s\n' "$(cd "${APP_ROOT}/../home" && pwd)"
+    return
+  fi
+  printf '%s\n' "${APP_ROOT}"
+}
+
+HOME_DIR="$(resolve_home)"
+DATA_DIR="${HOME_DIR}/license"
+IDENTITY_FILE="${DATA_DIR}/device-age.key"
+LICENSE_FILE="${DATA_DIR}/license.lic"
+PRODUCT="AI-Gateway-Matrix"
+REQUEST_PREFIX="AG1"
+FINGERPRINT_NS="AI-GATEWAY-LICENSE-V1"
+
+die() { echo "[AGM LICENSE] $*" >&2; exit 1; }
+need() { command -v "$1" >/dev/null 2>&1 || die "缺少系统组件: $1"; }
+
+has_public_key() {
+  [ -s "${PUBLIC_KEY}" ]
+}
+
+license_version() {
+  if [ -f "${VERSION_FILE}" ]; then head -n1 "${VERSION_FILE}" | tr -d '[:space:]'
+  else echo "0.0.0"
+  fi
+}
+
+build_date() {
+  if [ -f "${BUILD_DATE_FILE}" ]; then head -n1 "${BUILD_DATE_FILE}" | tr -d '[:space:]'
+  else date -u +%F
+  fi
+}
+
+valid_hardware_value() {
+  local value
+  value="$(printf '%s' "${1:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+  [ -n "${value}" ] || return 1
+  case "${value}" in
+    00000000-0000-0000-0000-000000000000|0000000000000000|none|unknown|defaultstring|tobefilledbyo.e.m.|notspecified) return 1 ;;
+  esac
+  return 0
+}
+
+device_fingerprint() {
+  local product_uuid="" board_serial="" machine_id="" material=""
+  [ -r /sys/class/dmi/id/product_uuid ] && product_uuid="$(tr -d '[:space:]' < /sys/class/dmi/id/product_uuid)"
+  [ -r /sys/class/dmi/id/board_serial ] && board_serial="$(tr -d '[:space:]' < /sys/class/dmi/id/board_serial)"
+  if [ -r /etc/machine-id ]; then machine_id="$(tr -d '[:space:]' < /etc/machine-id)"
+  elif [ -r /var/lib/dbus/machine-id ]; then machine_id="$(tr -d '[:space:]' < /var/lib/dbus/machine-id)"
+  fi
+
+  if valid_hardware_value "${product_uuid}"; then
+    material="dmi:${product_uuid}"
+    valid_hardware_value "${board_serial}" && material="${material}:${board_serial}"
+  elif valid_hardware_value "${board_serial}"; then
+    material="board:${board_serial}"
+  elif [ -n "${machine_id}" ]; then
+    material="os:${machine_id}"
+  else
+    die "无法获取可用的设备标识"
+  fi
+  printf '%s\0%s' "${FINGERPRINT_NS}" "${material}" | sha256sum | awk '{print $1}'
+}
+
+ensure_identity() {
+  need age-keygen
+  mkdir -p "${DATA_DIR}"
+  chmod 700 "${DATA_DIR}"
+  if [ ! -s "${IDENTITY_FILE}" ]; then
+    age-keygen -o "${IDENTITY_FILE}" >/dev/null 2>&1
+    chmod 600 "${IDENTITY_FILE}"
+  fi
+}
+
+device_recipient() {
+  ensure_identity
+  age-keygen -y "${IDENTITY_FILE}"
+}
+
+b64url_encode() {
+  base64 -w0 | tr '+/' '-_' | tr -d '='
+}
+
+b64url_decode() {
+  local value="$1" rem
+  value="$(printf '%s' "${value}" | tr '_-' '/+')"
+  rem=$(( ${#value} % 4 ))
+  [ "${rem}" -eq 0 ] || value="${value}$(printf '=%.0s' $(seq 1 $((4-rem))))"
+  printf '%s' "${value}" | base64 -d
+}
+
+request_code() {
+  need jq
+  local payload encoded checksum
+  payload="$(jq -cn \
+    --arg product "${PRODUCT}" \
+    --arg device "$(device_fingerprint)" \
+    --arg recipient "$(device_recipient)" \
+    --arg platform "$(uname -s)-$(uname -m)" \
+    --arg app_version "$(license_version)" \
+    '{v:1,product:$product,device:$device,recipient:$recipient,platform:$platform,app_version:$app_version}')"
+  encoded="$(printf '%s' "${payload}" | b64url_encode)"
+  checksum="$(printf '%s' "${encoded}" | sha256sum | cut -c1-12)"
+  printf '%s.%s.%s\n' "${REQUEST_PREFIX}" "${encoded}" "${checksum}"
+}
+
+decode_request() {
+  need jq
+  local code="${1:-}" prefix encoded checksum actual payload
+  IFS='.' read -r prefix encoded checksum <<EOF
+${code}
+EOF
+  [ "${prefix}" = "${REQUEST_PREFIX}" ] && [ -n "${encoded}" ] && [ -n "${checksum}" ] || die "申请码格式错误"
+  actual="$(printf '%s' "${encoded}" | sha256sum | cut -c1-12)"
+  [ "${actual}" = "${checksum}" ] || die "申请码校验失败，请重新复制"
+  payload="$(b64url_decode "${encoded}")" || die "申请码解码失败"
+  printf '%s' "${payload}" | jq -e \
+    --arg product "${PRODUCT}" \
+    'select(.v == 1 and .product == $product and (.device|type == "string") and (.device|length == 64) and (.recipient|startswith("age1")))' \
+    >/dev/null || die "申请码内容无效"
+  printf '%s\n' "${payload}"
+}
+
+verify_file() {
+  need age
+  need minisign
+  need jq
+  need tar
+  local source="$1" quiet="${2:-0}" work names count device major max_major updates_until current_build
+  [ -s "${source}" ] || { [ "${quiet}" = 1 ] || echo "许可证文件不存在或为空" >&2; return 1; }
+  [ -s "${PUBLIC_KEY}" ] || { [ "${quiet}" = 1 ] || echo "缺少内置验签公钥" >&2; return 1; }
+  ensure_identity
+  work="$(mktemp -d "${TMPDIR:-/tmp}/agm-license.XXXXXX")"
+  if ! age -d -i "${IDENTITY_FILE}" -o "${work}/bundle.tar" "${source}" 2>/dev/null; then
+    rm -rf "${work}"
+    [ "${quiet}" = 1 ] || echo "许可证不属于这台电脑，或文件已损坏" >&2
+    return 1
+  fi
+  names="$(tar -tf "${work}/bundle.tar" 2>/dev/null || true)"
+  count="$(printf '%s\n' "${names}" | sed '/^$/d' | wc -l)"
+  if [ "${count}" -ne 2 ] || ! printf '%s\n' "${names}" | grep -qx 'license.json' || ! printf '%s\n' "${names}" | grep -qx 'license.minisig'; then
+    rm -rf "${work}"
+    [ "${quiet}" = 1 ] || echo "许可证容器格式无效" >&2
+    return 1
+  fi
+  tar --no-same-owner --no-same-permissions -xf "${work}/bundle.tar" -C "${work}" license.json license.minisig
+  if ! minisign -Vm "${work}/license.json" -x "${work}/license.minisig" -p "${PUBLIC_KEY}" >/dev/null 2>&1; then
+    rm -rf "${work}"
+    [ "${quiet}" = 1 ] || echo "许可证数字签名无效" >&2
+    return 1
+  fi
+  device="$(device_fingerprint)"
+  if ! jq -e --arg device "${device}" --arg product "${PRODUCT}" \
+    'select(.format == 1 and .product == $product and .perpetual == true and .device_fingerprint == $device)' \
+    "${work}/license.json" >/dev/null; then
+    rm -rf "${work}"
+    [ "${quiet}" = 1 ] || echo "许可证产品、设备或授权类型不匹配" >&2
+    return 1
+  fi
+  major="$(license_version | cut -d. -f1)"
+  max_major="$(jq -r '.max_major // 0' "${work}/license.json")"
+  if ! [[ "${major}" =~ ^[0-9]+$ && "${max_major}" =~ ^[0-9]+$ ]] || [ "${major}" -gt "${max_major}" ]; then
+    rm -rf "${work}"
+    [ "${quiet}" = 1 ] || echo "当前大版本超出许可范围" >&2
+    return 1
+  fi
+  updates_until="$(jq -r '.updates_until // "permanent"' "${work}/license.json")"
+  current_build="$(build_date)"
+  if [ "${updates_until}" != "permanent" ] && [[ "${updates_until}" < "${current_build}" ]]; then
+    rm -rf "${work}"
+    [ "${quiet}" = 1 ] || echo "当前发布日期超出许可的更新权益" >&2
+    return 1
+  fi
+  [ "${quiet}" = 1 ] || jq -r '"AI Gateway Matrix 已授权给: \(.customer)\n许可证: \(.license_id)\n授权版本: \(.max_major).x\n更新权益: \(.updates_until // "permanent")"' "${work}/license.json"
+  rm -rf "${work}"
+  return 0
+}
+
+desktop_dirs() {
+  local d
+  if command -v xdg-user-dir >/dev/null 2>&1; then
+    d="$(xdg-user-dir DESKTOP 2>/dev/null || true)"
+    [ -n "${d}" ] && printf '%s\n' "${d}"
+  fi
+  printf '%s\n' "${HOME}/Desktop" "${HOME}/桌面" | awk '!seen[$0]++'
+}
+
+import_file() {
+  local source="$1" temp_target
+  verify_file "${source}" 1 || die "许可证验证失败：${source}"
+  mkdir -p "${DATA_DIR}"
+  chmod 700 "${DATA_DIR}"
+  temp_target="${DATA_DIR}/.license.lic.tmp.$$"
+  cp -- "${source}" "${temp_target}"
+  chmod 600 "${temp_target}"
+  mv -f "${temp_target}" "${LICENSE_FILE}"
+  verify_file "${LICENSE_FILE}" 1 || die "许可证安装后复核失败"
+  if [ "$(readlink -f "${source}")" != "$(readlink -f "${LICENSE_FILE}")" ]; then
+    rm -f -- "${source}"
+  fi
+  echo "AI Gateway Matrix 永久许可证已安全导入。"
+  echo "位置: ${LICENSE_FILE}"
+}
+
+scan_and_import() {
+  local dir candidate
+  while IFS= read -r dir; do
+    [ -d "${dir}" ] || continue
+    while IFS= read -r -d '' candidate; do
+      if verify_file "${candidate}" 1; then
+        import_file "${candidate}"
+        return 0
+      fi
+    done < <(find "${dir}" -maxdepth 1 -type f \( \
+      -iname 'AI-Gateway-Matrix*.lic' -o -iname 'AGM*.lic' -o -iname 'ai-gateway*.lic' \
+      \) -print0 2>/dev/null)
+  done < <(desktop_dirs)
+  return 1
+}
+
+activation_html() {
+  local code file out_dir
+  out_dir="${HOME_DIR}/state"
+  mkdir -p "${out_dir}"
+  code="$(request_code)"
+  file="${out_dir}/activation.html"
+  cat > "${file}" <<EOF
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>AI Gateway Matrix 离线激活</title>
+<style>
+  body{margin:0;background:#f5f5f7;color:#1d1d1f;
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK SC",sans-serif}
+  .card{max-width:760px;margin:8vh auto;padding:38px;background:#fff;
+    border:1px solid #e5e5ea;border-radius:22px;box-shadow:0 16px 50px #00000012}
+  h1{margin:0 0 10px;font-size:26px;letter-spacing:-.02em}
+  p{color:#6e6e73;line-height:1.55}
+  .code{word-break:break-all;padding:18px;background:#f0f3f8;border-radius:12px;
+    font:13px ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.7;color:#1d1d1f}
+  button{margin-top:16px;padding:11px 18px;border:0;border-radius:10px;background:#0071e3;
+    color:#fff;font-weight:700;cursor:pointer}
+  ol{padding-left:1.2em;color:#555}
+  li{margin:9px 0}
+  .hint{color:#8e8e93;font-size:13px}
+</style>
+</head>
+<body>
+<main class="card">
+  <h1>需要离线激活</h1>
+  <p>请复制设备申请码并发给授权人。未激活时不会启动网关服务。</p>
+  <div id="code" class="code">${code}</div>
+  <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('code').textContent).then(()=>this.textContent='已复制')">复制申请码</button>
+  <ol>
+    <li>收到 <code>.lic</code> 后放到桌面（Desktop / 桌面）。</li>
+    <li>再次运行 <code>ai-gateway-matrix start</code> 或 <code>app</code>。</li>
+    <li>软件会自动导入、删除桌面原文件并离线解锁。</li>
+  </ol>
+  <p class="hint">许可证仅绑定当前设备。API Key 与配置在用户数据目录，换机需重新授权。</p>
+</main>
+</body>
+</html>
+EOF
+  chmod 600 "${file}"
+  printf '%s\n' "${file}"
+}
+
+# 开源版：默认不拦截启动。
+# 若设置 AGM_ENFORCE_LICENSE=1 且存在公钥，则恢复严格校验（一般不需要）。
+ensure_license() {
+  local enforce="${AGM_ENFORCE_LICENSE:-}"
+  case "${enforce}" in
+    1|true|TRUE|yes|YES) ;;
+    *)
+      echo "[AGM LICENSE] 开源版：不强制授权，可直接 start"
+      return 0
+      ;;
+  esac
+
+  local bypass="${AI_GATEWAY_LICENSE_BYPASS:-}"
+  case "${bypass}" in
+    1|true|TRUE|yes|YES)
+      echo "[AGM LICENSE] 开发豁免 AI_GATEWAY_LICENSE_BYPASS=${bypass}"
+      return 0
+      ;;
+  esac
+
+  if ! has_public_key; then
+    echo "[AGM LICENSE] 无公钥，跳过授权闸"
+    return 0
+  fi
+
+  for cmd in age minisign jq tar; do
+    if ! command -v "${cmd}" >/dev/null 2>&1; then
+      die "强制授权需要 ${cmd}：sudo apt install minisign age jq"
+    fi
+  done
+
+  if verify_file "${LICENSE_FILE}" 1; then
+    return 0
+  fi
+  if scan_and_import && verify_file "${LICENSE_FILE}" 1; then
+    return 0
+  fi
+  echo "尚未激活（AGM_ENFORCE_LICENSE=1）。设备申请码：" >&2
+  request_code >&2
+  echo "ai-gateway-matrix license import <file.lic>" >&2
+  return 10
+}
+
+case "${1:-status}" in
+  request) request_code ;;
+  decode-request) decode_request "${2:-}" ;;
+  activation-html) activation_html ;;
+  import) [ -n "${2:-}" ] || die "用法: ai-gateway-license import <file.lic>"; import_file "$2" ;;
+  verify) [ -n "${2:-}" ] || die "用法: ai-gateway-license verify <file.lic>"; verify_file "$2" ;;
+  verify-installed|status) verify_file "${LICENSE_FILE}" ;;
+  ensure) ensure_license ;;
+  device-id) device_fingerprint ;;
+  home) printf '%s\n' "${HOME_DIR}" ;;
+  has-pubkey) has_public_key && echo yes || echo no ;;
+  *) die "用法: ai-gateway-license {request|decode-request|activation-html|import|verify|status|ensure|device-id|home|has-pubkey}" ;;
+esac

@@ -5,10 +5,14 @@
 # 日志
 # 虚拟环境
 # 运行时生成的上游模型目录审计结果
-build/
 *.db
 develop-eggs/
-dist/
+# 打包/加固构建产物（保留 app/dashboard/frontend/dist 控制台静态资源）
+/build/
+/dist/
+app/build/
+app/dist/
+*.deb
 # Docker
 docker-compose.override.yml
 downloads/
@@ -35,11 +39,21 @@ logs/
 parts/
 __pycache__/
 *.py[cod]
-# Compose 可迁移数据目录（源码开发时与仓库同根）
+# 前端依赖（体积大，本地 npm install）
+node_modules/
+# 测试/静态检查缓存
+.pytest_cache/
+.ruff_cache/
+# 用户数据（源码布局：home/；切勿提交 Key）
+/home/
+/home/**
+# 兼容旧路径
 /data/
+/state/
 # 许可证与签发私钥（公钥 ai-gateway.pub 可提交）
 /license/
 *.lic
+app/licensing/**/*.key
 licensing/**/*.key
 # Python
 .Python
@@ -48,6 +62,8 @@ sdist/
 state/client-keys.json
 state/*.json
 state/ui-settings.json
+home/**/*.json
+home/.env
 state/reload.signal
 # 本机故障交接与手工页面备份，不属于发布产物
 CONTINUE_AFTER_REBOOT.txt
@@ -60,3 +76,7 @@ var/
 venv/
 .vscode/
 wheels/
+
+# 用户设置/Key 一键记忆文件（含密钥，禁止提交）
+jiyi.txt
+

@@ -1,0 +1,33 @@
+#!/bin/sh
+set -e
+
+cat <<'EOF'
+ai-gateway-matrix 已安装（开源版）。
+
+启动:
+  ai-gateway-matrix start
+  或: ai-gateway-matrix app
+
+升级 deb 不会覆盖 Key 与配置。用户数据:
+  ~/.config/ai-gateway-matrix
+  （可用 AI_GATEWAY_HOME 覆盖）
+
+备份 / 恢复:
+  ai-gateway-matrix backup
+  ai-gateway-matrix restore ~/xxx.tgz
+  ai-gateway-matrix jiyi save|load   # 若使用源码布局的 jiyi 记忆
+
+帮助:
+  ai-gateway-matrix --help
+
+需要本机 Docker，且当前用户可执行 docker。
+EOF
+
+if command -v update-desktop-database >/dev/null 2>&1; then
+  update-desktop-database -q /usr/share/applications 2>/dev/null || true
+fi
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+  gtk-update-icon-cache -q /usr/share/icons/hicolor 2>/dev/null || true
+fi
+
+exit 0

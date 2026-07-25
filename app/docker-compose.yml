@@ -1,0 +1,203 @@
+# ════════════════════════════════════════════════════════════════
+#  AI Gateway Matrix — Docker Compose
+#
+#  路径约定（由 run.sh / ai-gateway-matrix 注入）：
+#    AI_GATEWAY_CODE  程序代码目录（源码根或 /usr/share/ai-gateway-matrix）
+#    --project-directory 用户数据目录：./.env ./config.yaml ./state ./data
+#
+#  用户侧相对路径均相对「可迁移数据目录」，整目录拷贝即可换机。
+# ════════════════════════════════════════════════════════════════
+
+services:
+  ai-gateway-matrix:
+    # 固定经验证的稳定版，避免 main-latest 在重启/重建时引入 Hook 破坏性变更。
+    image: ghcr.io/berriai/litellm:v1.91.1
+    container_name: ai-gateway-matrix
+    restart: unless-stopped
+    # 不直接暴露宿主端口；Dashboard 在 Docker 内网透明代理全部 LiteLLM
+    # 路径，并在宿主 4000 端口提供中文统一界面。
+    expose:
+      - "4000"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ${AI_GATEWAY_CODE:-.}/gateway:/app/gateway:ro
+      - ./provider_manifest.yaml:/app/provider_manifest.yaml:ro
+      - ./state:/app/state:ro
+      # 仪表盘写入的 Key 在此文件；网关需能读到并热加载（env_file 只在启动时注入一次）
+      - ./.env:/app/.env:ro
+    env_file:
+      - .env
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD is required; run ./run.sh}
+      - DATABASE_URL=postgresql://litellm:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required; run ./run.sh}@postgres:5432/litellm
+      # 确保 /app 在 Python 搜索路径里，gateway 包才能被 import
+      - PYTHONPATH=/app
+      # 日志级别（DEBUG / INFO / WARNING / ERROR）
+      - LITELLM_LOG=INFO
+      # 关闭遥测上报（隐私 + 减少不必要的网络请求）
+      - LITELLM_TELEMETRY=False
+      # 主配置保留全部供应商供仪表盘编辑；启动器只把已填写凭据的 deployment
+      # 写进 /app 运行时配置，避免 LiteLLM 选中空 API Key；LiteLLM 也会以
+      # 配置所在目录解析 gateway.custom_router_hook，因此不能放到 /tmp。
+      - SOURCE_GATEWAY_CONFIG_PATH=/app/config.yaml
+      - GATEWAY_CONFIG_PATH=/app/runtime-config.yaml
+      - PROVIDER_DISCOVERY_OUTPUT=/app/state/provider-discovery.json
+      - GATEWAY_DOTENV_PATH=/app/.env
+    security_opt:
+      - no-new-privileges:true
+    entrypoint: ["python", "-m", "gateway.runtime_launcher"]
+    command: ["--port", "4000"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:4000/health/liveliness', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  redis:
+    image: redis:7-alpine
+    container_name: ai-gateway-matrix-redis
+    restart: unless-stopped
+    volumes:
+      # 绑定到用户数据目录，随 AI_GATEWAY_HOME 一起迁移
+      - ./data/redis:/data
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD is required; run ./run.sh}
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$${REDIS_PASSWORD}\""]
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$${REDIS_PASSWORD}\" redis-cli ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: ai-gateway-matrix-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=litellm
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required; run ./run.sh}
+      - POSTGRES_DB=litellm
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm -d litellm"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # 仪表盘：填 Key、看用量；config/.env/state 写用户数据目录
+  dashboard:
+    build:
+      context: ${AI_GATEWAY_CODE:-.}
+      dockerfile: dashboard/Dockerfile
+    container_name: ai-gateway-matrix-dashboard
+    restart: unless-stopped
+    working_dir: /app
+    env_file:
+      - .env
+    # .env 保持宿主机 0600 权限；Dashboard 以文件所有者身份读写它。
+    # 服务同时 drop 全部 capabilities，不能依赖容器 root 绕过权限。
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    ports:
+      - "127.0.0.1:4000:8080"   # 中文统一入口 + OpenAI-compatible API
+      - "127.0.0.1:8080:8080"   # 兼容旧书签；与 4000 是同一个界面
+    volumes:
+      - ./config.yaml:/app/config.yaml   # 读写：优先级修改功能需要写入这个文件
+      - ${AI_GATEWAY_CODE:-.}/gateway:/app/gateway:ro
+      - ./provider_manifest.yaml:/app/provider_manifest.yaml:ro
+      # state 需可写：客户端密钥登记簿、UI 设置（client-keys.json / ui-settings.json）
+      - ./state:/app/state
+      - ./.env:/app/.env            # 读写：仪表盘要往这里写你填的 key
+      - ${AI_GATEWAY_CODE:-.}/dashboard:/app/dashboard:ro
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD is required; run ./run.sh}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required; run ./run.sh}
+      - PRIVATE_API_DATABASE_URL=postgresql+asyncpg://litellm:${POSTGRES_PASSWORD}@postgres:5432/litellm
+      - PYTHONPATH=/app
+      - LITELLM_UPSTREAM_URL=http://ai-gateway-matrix:4000
+      - DASHBOARD_AUTH=${DASHBOARD_AUTH:-local}
+      - BILLING_FAIL_MODE=${BILLING_FAIL_MODE:-open}
+      - BILLING_RETRY_POLICY=${BILLING_RETRY_POLICY:-successful_only}
+      - DEFAULT_REQUEST_MODE=${DEFAULT_REQUEST_MODE:-agent-stream}
+      - CREDITS_PER_USD=${CREDITS_PER_USD:-1000}
+      - STORE_PROMPT_CONTENT=${STORE_PROMPT_CONTENT:-false}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      ai-gateway-matrix:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  provider-monitor:
+    build:
+      context: ${AI_GATEWAY_CODE:-.}
+      dockerfile: dashboard/Dockerfile
+    container_name: ai-gateway-matrix-provider-monitor
+    restart: unless-stopped
+    working_dir: /app
+    env_file:
+      - .env
+    # state 是宿主机绑定挂载目录。容器同时启用了 cap_drop: ALL，因此即使
+    # 进程名义上是 root，也不能绕过宿主目录的 DAC 权限。显式使用启动
+    # 脚本的用户身份，既能写入 ./state，也不需要 chmod 777 或 sudo。
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    volumes:
+      # 模型目录确认是改名时，autofix 需要精确更新对应 deployment。
+      - ./config.yaml:/app/config.yaml
+      - ${AI_GATEWAY_CODE:-.}/gateway:/app/gateway:ro
+      - ${AI_GATEWAY_CODE:-.}/dashboard:/app/dashboard:ro
+      - ${AI_GATEWAY_CODE:-.}/scripts:/app/scripts:ro
+      - ./state:/app/state
+      # Dashboard 可随时新增/轮换 Key；巡检每轮从该文件热加载，不能只依赖
+      # 容器创建时冻结的 env_file 环境。
+      - ./.env:/app/.env:ro
+    # --autofix：模型改名自愈；--free-tier-refresh：免费额度文档跟进（可调顶级模型裁决）
+    command:
+      [
+        "python",
+        "-m",
+        "scripts.provider_discovery",
+        "--watch",
+        "--interval",
+        "3600",
+        "--autofix",
+        "--free-tier-refresh",
+        "--output",
+        "/app/state/provider-discovery.json",
+      ]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      # 不只检查文件“曾经存在”，还要检查每小时的审计循环仍在更新它。
+      test: ["CMD", "python", "-c", "from pathlib import Path; import time; p=Path('/app/state/provider-discovery.json'); assert p.is_file() and time.time() - p.stat().st_mtime < 4500"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+      start_period: 30s

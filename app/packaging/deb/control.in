@@ -1,0 +1,17 @@
+Package: ai-gateway-matrix
+Version: @VERSION@
+Section: net
+Priority: optional
+Architecture: all
+Maintainer: AI Gateway Matrix maintainers <noreply@localhost>
+Depends: bash (>= 4.0), coreutils, docker.io | docker-ce, openssl | python3, python3-gi, gir1.2-gtk-3.0, gir1.2-webkit2-4.1 | gir1.2-webkit2-4.0, jq
+Recommends: docker-compose-v2 | docker-compose-plugin
+Suggests: python3-yaml
+Homepage: https://github.com/dell121212/Private-API
+Description: Multi-provider OpenAI-compatible AI gateway (LiteLLM)
+ Open-source AI Gateway Matrix: unified OpenAI-compatible endpoint for multiple
+ LLM providers, Chinese dashboard, routing pools, Docker one-shot deploy.
+ .
+ Code: /usr/share/ai-gateway-matrix
+ User data: ${XDG_CONFIG_HOME:-$HOME/.config}/ai-gateway-matrix
+ No license gate. Upgrade keeps user data.

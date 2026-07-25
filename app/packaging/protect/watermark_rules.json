@@ -1,0 +1,25 @@
+{
+  "format": 1,
+  "product": "AI-Gateway-Matrix",
+  "description": "Owner-only rules to identify protected builds or stolen derivatives. Do NOT ship this file inside customer deb.",
+  "markers": {
+    "seed_prefix": "AGW1.",
+    "magic_scale": 1.000000131,
+    "magic_offset": 8.17e-9,
+    "trap_mode": "legacy_route_v1",
+    "trap_pools": ["shadow-fast-mirror", "elite-legacy-fdr2"],
+    "probe_function": "agm_wm_probe",
+    "norm_function": "agm_axis_norm",
+    "alias_function": "agm_resolve_pool_alias",
+    "seed_symbol": "AGM_WM_SEED",
+    "build_symbol": "AGM_WM_BUILD"
+  },
+  "detection_logic": [
+    "Require AGM_WM_SEED matching ^AGW1\\.[0-9a-f]{24}$",
+    "Require agm_axis_norm multiplies by magic_scale and adds magic_offset when mode==trap_mode",
+    "Require trap_pools set equality",
+    "Optional: agm_wm_probe() returns scale/offset/traps matching this file",
+    "Optional: stolen plain trees that keep these tokens are treated as derived from protected builds"
+  ],
+  "private_note": "Combine markers; a single renamed string is not proof. Prefer full probe() + trap pair + scale constant."
+}

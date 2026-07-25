@@ -1,0 +1,14 @@
+fastapi==0.136.3
+uvicorn[standard]==0.35.0
+pyyaml==6.0.3
+redis==5.2.0
+requests==2.34.2
+httpx==0.28.1
+websockets==15.0.1
+sqlalchemy[asyncio]==2.0.41
+asyncpg==0.30.0
+alembic==1.16.2
+argon2-cffi==25.1.0
+pydantic-settings==2.10.1
+python-multipart==0.0.20
+greenlet==3.2.3

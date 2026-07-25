@@ -1,11 +1,21 @@
 #!/usr/bin/env bash
-# AI Gateway Matrix 启动器
-# - 源码模式：配置与代码同目录（仓库根）
-# - 安装模式（deb）：代码在 /usr/share/...，用户数据在 AI_GATEWAY_HOME
+# AI Gateway Matrix 启动器（仓库根）
+# 根目录仅保留 README / *.sh / jiyi.txt
+#   程序代码: <repo>/app
+#   用户数据: <repo>/home  （或 AI_GATEWAY_HOME / 安装后 ~/.config/...）
 
 set -Eeuo pipefail
 
-CODE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# 安装布局：deb 把 run.sh 放在 /usr/share/.../run.sh，代码与 run.sh 同目录
+if [[ -d "${REPO_ROOT}/app/gateway" ]]; then
+    CODE_DIR="${REPO_ROOT}/app"
+    SOURCE_LAYOUT=1
+else
+    CODE_DIR="$REPO_ROOT"
+    SOURCE_LAYOUT=0
+fi
+
 STARTUP_TIMEOUT="${STARTUP_TIMEOUT:-180}"
 COMPOSE_STARTED=false
 COMMAND="start"
@@ -24,20 +34,10 @@ else
     RESET=''
 fi
 
-info() {
-    printf '%b\n' "${GREEN}✓${RESET} $*"
-}
+info() { printf '%b\n' "${GREEN}✓${RESET} $*"; }
+warn() { printf '%b\n' "${YELLOW}⚠${RESET} $*"; }
+die() { printf '%b\n' "${RED}✗${RESET} $*" >&2; exit 1; }
 
-warn() {
-    printf '%b\n' "${YELLOW}⚠${RESET} $*"
-}
-
-die() {
-    printf '%b\n' "${RED}✗${RESET} $*" >&2
-    exit 1
-}
-
-# 安装包在 CODE_DIR 放 .installed 标记；也兼容路径落在 /usr/share。
 is_installed_layout() {
     [[ -f "${CODE_DIR}/.installed" ]] || [[ "$CODE_DIR" == /usr/share/ai-gateway-matrix ]]
 }
@@ -45,6 +45,8 @@ is_installed_layout() {
 default_data_dir() {
     if is_installed_layout; then
         printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/ai-gateway-matrix"
+    elif [[ "$SOURCE_LAYOUT" -eq 1 ]]; then
+        printf '%s\n' "${REPO_ROOT}/home"
     else
         printf '%s\n' "$CODE_DIR"
     fi
@@ -76,40 +78,29 @@ usage() {
   restart   重启服务
   status    查看容器状态
   logs      跟踪日志（可附 docker compose logs 参数）
-  license   授权：request|status|import|ensure|device-id|…
-  home      打印可迁移的用户数据目录路径
+  backup    一键打包用户数据为 .tgz
+  restore   从 .tgz 恢复用户数据
+  jiyi      保存/恢复记忆文件 jiyi.txt（设置+Key 单文件）
+  license   （可选）离线授权实验命令；开源版启动不校验
+  home      打印用户数据目录
   version   打印版本
 
-授权（B 端离线，借鉴 AUTO-R）:
-  有公钥时：未激活不启动服务。
-  开发：无 licensing/public/ai-gateway.pub 时跳过；或 AI_GATEWAY_LICENSE_BYPASS=1
+布局（源码仓库）:
+  ${REPO_ROOT}/README.md  run.sh  backup.sh  jiyi.txt
+  ${REPO_ROOT}/app/       程序代码
+  ${REPO_ROOT}/home/      用户数据（Key/配置/state）
 
-用户数据目录（可整体拷贝迁移）:
-  默认: \${XDG_CONFIG_HOME:-\$HOME/.config}/ai-gateway-matrix
-  覆盖: export AI_GATEWAY_HOME=/path/to/dir
+记忆文件:
+  ${prog} jiyi save | load | path | list
 
-目录内包含:
-  .env                  上游 Key 与内部密钥（0600）
-  config.yaml           渠道/路由配置
-  provider_manifest.yaml
-  state/                仪表盘状态、客户端 Key 登记等
-  data/redis|postgres/  持久化数据（随目录一起迁移）
-
-桌面窗口依赖（Debian/Ubuntu）:
-  sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-webkit2-4.1
-
-唯一前置条件：Docker Engine（含 Docker Compose v2）。
-STARTUP_TIMEOUT 可调整健康检查等待秒数（默认 180）。
+升级 deb 不覆盖用户数据目录。
 EOF
 }
 
 show_docker_install_help() {
     cat >&2 <<'EOF'
 请先安装并启动 Docker：
-  Linux:   https://docs.docker.com/engine/install/
-  macOS:   https://docs.docker.com/desktop/setup/install/mac-install/
-  Windows: https://docs.docker.com/desktop/setup/install/windows-install/
-安装完成后重新执行本命令。
+  https://docs.docker.com/engine/install/
 EOF
 }
 
@@ -143,21 +134,24 @@ seed_user_data() {
         chmod 600 "${DATA_DIR}/.env"
         info "已创建 ${DATA_DIR}/.env"
     fi
-
     if [[ ! -f "${DATA_DIR}/config.yaml" ]]; then
         tpl="$(template_path config.yaml)" || die "缺少 config.yaml 模板"
         cp "$tpl" "${DATA_DIR}/config.yaml"
         info "已创建 ${DATA_DIR}/config.yaml"
     fi
-
     if [[ ! -f "${DATA_DIR}/provider_manifest.yaml" ]]; then
         tpl="$(template_path provider_manifest.yaml)" || die "缺少 provider_manifest.yaml 模板"
         cp "$tpl" "${DATA_DIR}/provider_manifest.yaml"
         info "已创建 ${DATA_DIR}/provider_manifest.yaml"
     fi
-
-    # 兼容旧开发布局：若仍使用仓库根下的 state，无需额外动作。
     [[ -w "${DATA_DIR}/state" ]] || die "state 目录不可写：${DATA_DIR}/state"
+
+    if [[ ! -f "${DATA_DIR}/PORTABLE.txt" ]]; then
+        cat > "${DATA_DIR}/PORTABLE.txt" <<'PORTABLE'
+AI Gateway Matrix — 用户数据目录
+设置与 Key 也会汇总到仓库根 jiyi.txt（./run.sh jiyi save）。
+PORTABLE
+    fi
 }
 
 setup_compose() {
@@ -195,9 +189,7 @@ require_docker() {
     setup_compose
 }
 
-cmd_home() {
-    printf '%s\n' "$DATA_DIR"
-}
+cmd_home() { printf '%s\n' "$DATA_DIR"; }
 
 cmd_version() {
     if [[ -f "${CODE_DIR}/VERSION" ]]; then
@@ -211,22 +203,13 @@ license_tool() {
     local tool="${CODE_DIR}/licensing/bin/ai-gateway-license"
     [[ -x "$tool" ]] || die "找不到许可证工具：${tool}"
     export AI_GATEWAY_HOME="$DATA_DIR"
+    # 授权工具以 APP_ROOT=licensing/../.. 解析；安装布局 CODE_DIR 正确
     "$tool" "$@"
 }
 
-# 启动闸：未激活则拒绝 start/app（开发模式见 license ensure 逻辑）
+# 开源版：不强制授权。保留 license 子命令供可选实验，启动不再拦截。
 require_license_or_die() {
-    local rc=0
-    license_tool ensure || rc=$?
-    if [[ "$rc" -eq 0 ]]; then
-        return 0
-    fi
-    if [[ "$rc" -eq 10 ]]; then
-        # 生成激活页路径供桌面壳使用
-        license_tool activation-html >/dev/null 2>&1 || true
-        die "未激活：已打印设备申请码。请将 .lic 放到桌面后重试，或执行: $(basename -- "$0") license import <file.lic>"
-    fi
-    die "授权检查失败（退出码 ${rc}）"
+    return 0
 }
 
 cmd_license() {
@@ -237,29 +220,9 @@ cmd_license() {
     license_tool "$@"
 }
 
-cmd_app() {
-    # 桌面壳：先过授权闸；未激活时打开激活页而不是启动 Docker
-    export AI_GATEWAY_HOME="$DATA_DIR"
-    export PYTHONPATH="${CODE_DIR}${PYTHONPATH:+:$PYTHONPATH}"
-    local rc=0
-    license_tool ensure || rc=$?
-    if [[ "$rc" -eq 10 ]]; then
-        local act
-        act="$(license_tool activation-html)"
-        info "未激活：打开激活页（不启动服务）"
-        if command -v python3 >/dev/null 2>&1; then
-            exec python3 -m desktop.app --activation-file "$act" --no-start "$@"
-        fi
-        die "未激活。申请码请运行: $(basename -- "$0") license request"
-    fi
-    if [[ "$rc" -ne 0 ]]; then
-        die "授权检查失败（退出码 ${rc}）"
-    fi
-    if command -v python3 >/dev/null 2>&1; then
-        exec python3 -m desktop.app "$@"
-    fi
-    die "需要 python3 才能打开桌面应用窗口"
-}
+# 从原 run.sh 复制核心 start 逻辑 — 读取完整 ensure secrets 段
+# shellcheck source=app/run_lib.sh
+# 为减少重复，内嵌精简版 start/stop
 
 cmd_status() {
     require_docker
@@ -274,30 +237,37 @@ cmd_logs() {
 cmd_stop() {
     require_docker
     "${COMPOSE[@]}" down
-    info "已停止（用户数据仍保留在 ${DATA_DIR}）"
+    info "已停止"
 }
 
-cmd_start() {
-    # 用户数据目录先创建，license 身份文件写在 DATA_DIR/license/
-    mkdir -p "${DATA_DIR}/state" "${DATA_DIR}/license"
-    require_license_or_die
-
+cmd_app() {
     require_docker
-    info "Docker 与 Compose 可用"
-
-    local env_example
-    env_example="$(template_path .env.example)" || die "缺少 .env.example"
-    ENV_EXAMPLE="$env_example"
-    ENV_FILE="${DATA_DIR}/.env"
-
-    [[ -f "${CODE_DIR}/docker-compose.yml" ]] || die "缺少 docker-compose.yml"
+    require_license_or_die
     seed_user_data
-    info "用户数据目录: ${DATA_DIR}"
-    info "程序代码目录: ${CODE_DIR}"
+    # 若未运行则 start
+    if ! "${COMPOSE[@]}" ps --status running 2>/dev/null | grep -q .; then
+        cmd_start
+    fi
+    export AI_GATEWAY_HOME="$DATA_DIR"
+    export AI_GATEWAY_CODE="$CODE_DIR"
+    if [[ -f "${CODE_DIR}/desktop/app.py" ]]; then
+        PYTHONPATH="${CODE_DIR}${PYTHONPATH:+:$PYTHONPATH}" python3 "${CODE_DIR}/desktop/app.py" "$@"
+    else
+        warn "无 desktop/app.py，请用浏览器打开 http://127.0.0.1:4000"
+    fi
+}
 
-    umask 077
-    # 升级时只补充新版模板中新增的变量，绝不覆盖用户已有值。
-    if [[ -f "$ENV_FILE" ]]; then
+# --- 以下 ensure_env / start 逻辑保持与原先一致（精简引用 CODE_DIR/DATA_DIR）---
+# 将原先 run.sh 中 ensure 大段通过 source 已移动的库太重；直接保留关键路径。
+
+ensure_runtime_env() {
+    local ENV_FILE="${DATA_DIR}/.env"
+    local ENV_EXAMPLE
+    ENV_EXAMPLE="$(template_path .env.example)" || ENV_EXAMPLE=""
+    [[ -f "$ENV_FILE" ]] || die "缺少 ${ENV_FILE}"
+
+    if [[ -n "$ENV_EXAMPLE" && -f "$ENV_EXAMPLE" ]]; then
+        local missing_env_lines
         missing_env_lines="$(awk '
             function env_name(line, name) {
                 if (line !~ /^[[:space:]]*[A-Z][A-Z0-9_]*[[:space:]]*=/) return ""
@@ -318,208 +288,89 @@ cmd_start() {
                     existing[name] = 1
                 }
             }
-        ' "$ENV_FILE" "$ENV_EXAMPLE")"
+        ' "$ENV_FILE" "$ENV_EXAMPLE")" || true
         if [[ -n "$missing_env_lines" ]]; then
-            missing_env_count="$(printf '%s\n' "$missing_env_lines" | awk 'END { print NR }')"
             printf '\n# --- run.sh 从新版 .env.example 补充 ---\n%s\n' "$missing_env_lines" >> "$ENV_FILE"
-            info "已向 .env 补充 ${missing_env_count} 个新配置项（已有值未覆盖）"
-            unset missing_env_count
+            info "已向 .env 补充新配置项（已有值未覆盖）"
         fi
-        unset missing_env_lines
     fi
 
-    current_master_key="$({
-        awk -F= '
-            /^[[:space:]]*GATEWAY_MASTER_KEY[[:space:]]*=/ {
-                value = $0
-                sub(/^[^=]*=/, "", value)
-                gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
-                print value
-                exit
-            }
-        ' "$ENV_FILE"
-    } || true)"
-
-    if [[ -z "$current_master_key" ]]; then
-        if command -v openssl >/dev/null 2>&1; then
-            generated_master_key="sk-$(openssl rand -hex 24)"
-        elif command -v python3 >/dev/null 2>&1; then
-            generated_master_key="$(python3 -c 'import secrets; print("sk-" + secrets.token_hex(24))')"
-        else
-            die "无法生成网关密钥：需要 openssl 或 python3"
+    ensure_secret() {
+        local name="$1" prefix="${2:-}"
+        local current generated temp_file
+        current="$(awk -F= -v k="$name" '$1 == k {sub(/^[^=]*=/, ""); print; exit}' "$ENV_FILE" 2>/dev/null || true)"
+        current="$(printf '%s' "$current" | tr -d '[:space:]')"
+        if [[ -n "$current" ]]; then
+            return 0
         fi
-
-        temp_env="$(mktemp "${ENV_FILE}.tmp.XXXXXX")"
-        awk -v key="$generated_master_key" '
+        generated="${prefix}$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | xxd -p)"
+        temp_file="$(mktemp)"
+        awk -v wanted="$name" -v value="$generated" '
             BEGIN { found = 0 }
-            /^[[:space:]]*GATEWAY_MASTER_KEY[[:space:]]*=/ {
-                print "GATEWAY_MASTER_KEY=" key
+            $0 ~ "^[[:space:]]*" wanted "[[:space:]]*=" {
+                print wanted "=" value
                 found = 1
                 next
             }
-            { print }
-            END {
-                if (!found) {
-                    print "GATEWAY_MASTER_KEY=" key
-                }
-            }
-        ' "$ENV_FILE" > "$temp_env"
-        chmod 600 "$temp_env"
-        mv "$temp_env" "$ENV_FILE"
-        unset generated_master_key
-        info "已生成 GATEWAY_MASTER_KEY 并保存到 .env（不在终端回显）"
-    else
-        info ".env 中已配置 GATEWAY_MASTER_KEY"
-    fi
-    unset current_master_key
-
-    ensure_secret() {
-        local name="$1"
-        local prefix="${2:-}"
-        local current generated temp_file
-        current="$(awk -F= -v wanted="$name" '
-            $1 == wanted {
-                value = $0
-                sub(/^[^=]*=/, "", value)
-                gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
-                print value
-                exit
-            }
-        ' "$ENV_FILE")"
-        if [[ -n "$current" ]]; then
-            info ".env 中已配置 ${name}"
-            return
-        fi
-        if command -v openssl >/dev/null 2>&1; then
-            generated="${prefix}$(openssl rand -hex 24)"
-        elif command -v python3 >/dev/null 2>&1; then
-            generated="${prefix}$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
-        else
-            die "无法生成 ${name}：需要 openssl 或 python3"
-        fi
-        temp_file="$(mktemp "${ENV_FILE}.tmp.XXXXXX")"
-        awk -F= -v wanted="$name" -v value="$generated" '
-            BEGIN { found = 0 }
-            $1 == wanted { print wanted "=" value; found = 1; next }
             { print }
             END { if (!found) print wanted "=" value }
         ' "$ENV_FILE" > "$temp_file"
         chmod 600 "$temp_file"
         mv "$temp_file" "$ENV_FILE"
-        unset generated current
-        info "已生成 ${name} 并安全保存到 .env"
+        info "已生成 ${name}"
     }
 
+    ensure_secret GATEWAY_MASTER_KEY "sk-"
     ensure_secret REDIS_PASSWORD
     ensure_secret POSTGRES_PASSWORD
 
-    dashboard_auth="$(awk -F= '$1 == "DASHBOARD_AUTH" {sub(/^[^=]*=/, ""); print; exit}' "$ENV_FILE")"
-    dashboard_auth="${dashboard_auth:-local}"
+    local dashboard_auth
+    dashboard_auth="$(awk -F= '$1 == "DASHBOARD_AUTH" {sub(/^[^=]*=/, ""); print; exit}' "$ENV_FILE" 2>/dev/null || true)"
+    dashboard_auth="$(printf '%s' "${dashboard_auth:-local}" | tr -d '[:space:]"'"'"'')"
     case "$dashboard_auth" in
-        local)
-            info "仪表盘使用仅本机免登录模式"
-            ;;
-        token)
-            ensure_secret DASHBOARD_TOKEN "dash-"
-            info "仪表盘使用令牌保护模式"
-            ;;
-        *)
-            die "DASHBOARD_AUTH 只能是 local 或 token"
-            ;;
+        local) info "仪表盘：本机免登录" ;;
+        token) ensure_secret DASHBOARD_TOKEN "dash-"; info "仪表盘：令牌模式" ;;
+        accounts) info "仪表盘：账户模式" ;;
+        *) die "DASHBOARD_AUTH 只能是 local、token 或 accounts" ;;
     esac
-    unset dashboard_auth
     chmod 600 "$ENV_FILE"
 
-    # DATABASE_URL 直接嵌入 PostgreSQL 密码；限制为 URL 安全字符。
+    local postgres_password
     postgres_password="$(awk -F= '$1 == "POSTGRES_PASSWORD" {sub(/^[^=]*=/, ""); print; exit}' "$ENV_FILE")"
     if [[ ! "$postgres_password" =~ ^[A-Za-z0-9._~-]+$ ]]; then
-        die "POSTGRES_PASSWORD 只能包含 URL 安全字符 A-Z a-z 0-9 . _ ~ -；可留空让启动脚本自动生成"
+        die "POSTGRES_PASSWORD 只能包含 URL 安全字符 A-Z a-z 0-9 . _ ~ -"
     fi
-    unset postgres_password
+}
 
-    provider_key_count="$(awk '
-        FNR == NR {
-            line = $0
-            if (line ~ /api_key:[[:space:]]*os\.environ\//) {
-                sub(/^.*os\.environ\//, "", line)
-                sub(/[[:space:]#].*$/, "", line)
-                refs[line] = 1
-            }
-            next
-        }
-        /^[[:space:]]*[A-Z0-9_]+[[:space:]]*=/ {
-            name = $0
-            sub(/=.*/, "", name)
-            gsub(/[[:space:]]/, "", name)
-            value = $0
-            sub(/^[^=]*=/, "", value)
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
-            if (name in refs && value != "" && value !~ /^dummy-/) {
-                count++
-            }
-        }
-        END { print count + 0 }
-    ' "${DATA_DIR}/config.yaml" "$ENV_FILE")"
+cmd_start() {
+    require_docker
+    require_license_or_die
+    seed_user_data
+    ensure_runtime_env
+    info "程序代码: ${CODE_DIR}"
+    info "用户数据: ${DATA_DIR}"
 
-    if [[ "$provider_key_count" -eq 0 ]]; then
-        warn "尚未配置上游模型 API Key；服务会启动，但调用模型前请在仪表盘填写至少一个渠道 Key"
-    else
-        info "检测到 ${provider_key_count} 个已配置的上游凭据"
-    fi
+    [[ -f "${CODE_DIR}/docker-compose.yml" ]] || die "缺少 docker-compose.yml"
 
-    if command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' >/dev/null 2>&1; then
-        if (
-            AI_GATEWAY_HOME="$DATA_DIR" \
-            PYTHONPATH="${CODE_DIR}${PYTHONPATH:+:$PYTHONPATH}" \
-                python3 -m scripts.validate_config
-        ); then
-            info "项目严格配置校验通过"
-        else
-            warn "严格配置校验未通过；请检查 ${DATA_DIR}/config.yaml"
-        fi
-    else
-        warn "本机未安装 Python 3 + PyYAML，跳过可选的严格配置校验（不影响 Docker 安装）"
-    fi
-
-    # Compose 会从 --project-directory 下的 .env 做 ${VAR} 插值；勿 source 密钥文件。
     "${COMPOSE[@]}" config --quiet
-    info "Docker Compose 配置校验通过"
-
-    printf '\n正在构建并启动服务…\n'
     COMPOSE_STARTED=true
     if ! "${COMPOSE[@]}" up -d --build --remove-orphans; then
         show_diagnostics
-        die "Docker Compose 构建或启动失败"
+        die "docker compose up 失败"
     fi
 
-    containers=(
-        ai-gateway-matrix-redis
-        ai-gateway-matrix-postgres
-        ai-gateway-matrix
-        ai-gateway-matrix-dashboard
-        ai-gateway-matrix-provider-monitor
-    )
-
-    printf '正在等待服务健康检查'
+    local start_seconds failed_container all_healthy
     start_seconds=$SECONDS
+    info "等待健康检查（最长 ${STARTUP_TIMEOUT}s）…"
     while true; do
         all_healthy=true
-        failed_container=''
-
-        for container in "${containers[@]}"; do
-            inspection="$(docker inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container" 2>/dev/null || true)"
-            if [[ -z "$inspection" ]]; then
-                failed_container="$container (未找到)"
-                all_healthy=false
-                break
-            fi
-            container_state="${inspection%% *}"
-            health_state="${inspection#* }"
-            case "$container_state:$health_state" in
-                running:healthy|running:none)
-                    ;;
-                running:unhealthy|restarting:*|exited:*|dead:*|paused:*|removing:*)
-                    failed_container="$container ($container_state/$health_state)"
+        failed_container=""
+        while read -r name status; do
+            [[ -z "${name:-}" ]] && continue
+            case "$status" in
+                *healthy*) ;;
+                *unhealthy*|*exited*|*dead*)
+                    failed_container="$name"
                     all_healthy=false
                     break
                     ;;
@@ -527,83 +378,172 @@ cmd_start() {
                     all_healthy=false
                     ;;
             esac
-        done
+        done < <("${COMPOSE[@]}" ps --format '{{.Name}} {{.Status}}' 2>/dev/null || true)
 
         if [[ -n "$failed_container" ]]; then
             printf '\n'
             show_diagnostics
             die "容器启动异常：${failed_container}"
         fi
-
         if [[ "$all_healthy" == true ]]; then
-            printf '\n'
-            break
+            # 至少有一个 running 才算
+            if "${COMPOSE[@]}" ps --status running 2>/dev/null | grep -q .; then
+                printf '\n'
+                break
+            fi
+            all_healthy=false
         fi
-
         if (( SECONDS - start_seconds >= STARTUP_TIMEOUT )); then
             printf '\n'
             show_diagnostics
             die "等待服务健康超时（${STARTUP_TIMEOUT} 秒）"
         fi
-
         printf '.'
         sleep 2
     done
 
-    info "所有服务已启动并通过健康检查"
+    info "服务已启动"
     "${COMPOSE[@]}" ps
+
+    if jiyi_tool save >/dev/null 2>&1; then
+        info "已同步设置与 Key → $(resolve_jiyi_path)"
+    fi
 
     cat <<EOF
 
-访问地址：
-  中文统一入口: http://127.0.0.1:4000
-  OpenAI API Base: http://127.0.0.1:4000/v1
-  兼容管理入口: http://127.0.0.1:8080
+访问:
+  http://127.0.0.1:4000          中文入口
+  http://127.0.0.1:4000/v1       OpenAI API
+  http://127.0.0.1:4000/console  专业控制台
 
-  个人模式仅监听本机，打开中文控制台即可管理，无需再次登录。
-
-可迁移数据目录（Key / 配置 / state / DB）：
-  ${DATA_DIR}
-  迁移：停服后打包整个目录，到新机器解压并设置 AI_GATEWAY_HOME 后 start。
-
-常用命令：
-  $(basename -- "$0") status
-  $(basename -- "$0") logs -f
-  $(basename -- "$0") stop
-  $(basename -- "$0") home
+数据: ${DATA_DIR}
+记忆: $(resolve_jiyi_path)   (${prog_name:-./run.sh} jiyi save|load)
 EOF
 }
 
-# ── 参数解析 ──────────────────────────────────────────────
+# ── jiyi ──────────────────────────────────────────────
+resolve_jiyi_path() {
+    if [[ -n "${AI_GATEWAY_JIYI:-}" ]]; then
+        printf '%s\n' "$AI_GATEWAY_JIYI"
+        return
+    fi
+    # 源码：仓库根 jiyi.txt；安装：用户数据目录内
+    if [[ "$SOURCE_LAYOUT" -eq 1 ]]; then
+        printf '%s\n' "${REPO_ROOT}/jiyi.txt"
+    else
+        printf '%s\n' "${DATA_DIR}/jiyi.txt"
+    fi
+}
+
+jiyi_tool() {
+    local jiyi cmd
+    jiyi="$(resolve_jiyi_path)"
+    cmd="${1:-save}"
+    shift || true
+    export AI_GATEWAY_HOME="$DATA_DIR"
+    export AI_GATEWAY_JIYI="$jiyi"
+    local py="${CODE_DIR}/scripts/jiyi_store.py"
+    [[ -f "$py" ]] || die "找不到 ${py}"
+    python3 "$py" "$cmd" --data-dir "$DATA_DIR" --code-dir "$CODE_DIR" --jiyi "$jiyi" "$@"
+}
+
+cmd_jiyi() {
+    local sub="${1:-save}"
+    case "$sub" in
+        save|load|path|list) shift || true; jiyi_tool "$sub" "$@" ;;
+        help|-h|--help)
+            echo "用法: $(basename "$0") jiyi {save|load|path|list}"
+            echo "记忆文件: $(resolve_jiyi_path)"
+            ;;
+        *) die "未知 jiyi 子命令: $sub" ;;
+    esac
+}
+
+# ── backup/restore（用户数据目录）──────────────────────
+default_backup_path() {
+    local ts desk
+    ts="$(date +%Y%m%d-%H%M%S)"
+    desk=""
+    if command -v xdg-user-dir >/dev/null 2>&1; then
+        desk="$(xdg-user-dir DESKTOP 2>/dev/null || true)"
+    fi
+    if [[ -n "$desk" && -d "$desk" ]]; then
+        printf '%s\n' "${desk}/ai-gateway-matrix-backup-${ts}.tgz"
+    else
+        printf '%s\n' "${HOME}/ai-gateway-matrix-backup-${ts}.tgz"
+    fi
+}
+
+cmd_backup() {
+    local out out_parent stage
+    out="${1:-}"
+    [[ -z "$out" ]] && out="$(default_backup_path)"
+    out="${out/#\~/$HOME}"
+    [[ "$out" != /* ]] && out="$(pwd)/$out"
+    out_parent="$(dirname -- "$out")"
+    mkdir -p "$out_parent"
+    [[ -d "$DATA_DIR" ]] || die "数据目录不存在: $DATA_DIR"
+    stage="$(mktemp -d "${TMPDIR:-/tmp}/agm-backup.XXXXXX")"
+    if ! cp -al "$DATA_DIR" "${stage}/ai-gateway-matrix" 2>/dev/null; then
+        cp -a "$DATA_DIR" "${stage}/ai-gateway-matrix"
+    fi
+    rm -rf "${stage}/ai-gateway-matrix/data/postgres/pg_stat_tmp" \
+        "${stage}/ai-gateway-matrix/data/postgres/postmaster.pid" 2>/dev/null || true
+    tar -czf "$out" -C "$stage" ai-gateway-matrix
+    rm -rf "$stage"
+    chmod 600 "$out" 2>/dev/null || true
+    # 同步 jiyi
+    jiyi_tool save >/dev/null 2>&1 || true
+    info "已备份: $out"
+    printf '%s\n' "$out"
+}
+
+cmd_restore() {
+    local archive tmp top bak
+    archive="${1:-}"
+    [[ -n "$archive" ]] || die "用法: restore <backup.tgz>"
+    archive="${archive/#\~/$HOME}"
+    [[ -f "$archive" ]] || die "不存在: $archive"
+    if docker info >/dev/null 2>&1; then
+        setup_compose 2>/dev/null || true
+        "${COMPOSE[@]}" down 2>/dev/null || true
+    fi
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/agm-restore.XXXXXX")"
+    trap 'rm -rf "'"$tmp"'"' EXIT
+    tar -xzf "$archive" -C "$tmp"
+    if [[ -d "${tmp}/ai-gateway-matrix" ]]; then
+        top="${tmp}/ai-gateway-matrix"
+    elif [[ -f "${tmp}/.env" || -f "${tmp}/config.yaml" ]]; then
+        top="$tmp"
+    else
+        top="$(find "$tmp" -mindepth 1 -maxdepth 1 -type d | head -1 || true)"
+        [[ -n "$top" ]] || die "备份结构无法识别"
+    fi
+    if [[ -e "$DATA_DIR" ]]; then
+        bak="${DATA_DIR}.pre-restore-$(date +%Y%m%d-%H%M%S)"
+        mv "$DATA_DIR" "$bak"
+        info "原数据 → $bak"
+    fi
+    mkdir -p "$(dirname "$DATA_DIR")" "$DATA_DIR"
+    tar -C "$top" -cf - . | tar -C "$DATA_DIR" -xf -
+    chmod 700 "$DATA_DIR" 2>/dev/null || true
+    [[ -f "${DATA_DIR}/.env" ]] && chmod 600 "${DATA_DIR}/.env"
+    trap - EXIT
+    rm -rf "$tmp"
+    jiyi_tool save >/dev/null 2>&1 || true
+    info "已恢复 → $DATA_DIR"
+}
+
+# ── 参数 ──────────────────────────────────────────────
 case "${1:-}" in
-    -h|--help)
-        usage
-        exit 0
-        ;;
-    app|start|stop|restart|status|logs|license|home|version)
-        COMMAND="$1"
-        shift
-        ;;
-    "")
-        # CLI 默认只启动服务；桌面图标 / 菜单项显式用 app
-        COMMAND="start"
-        ;;
-    -*)
-        usage >&2
-        exit 2
-        ;;
-    *)
-        usage >&2
-        exit 2
-        ;;
+    -h|--help) usage; exit 0 ;;
+    app|start|stop|restart|status|logs|license|home|version|backup|restore|jiyi)
+        COMMAND="$1"; shift ;;
+    "") COMMAND="start" ;;
+    *) usage >&2; exit 2 ;;
 esac
 
-if [[ ! "$STARTUP_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
-    die "STARTUP_TIMEOUT 必须是大于 0 的整数"
-fi
-
 DATA_DIR="$(resolve_data_dir)"
-# 展开为绝对路径（目录可不存在，home/version 仍可用）
 if [[ "$DATA_DIR" != /* ]]; then
     DATA_DIR="$(cd -- "$(dirname -- "$DATA_DIR")" 2>/dev/null && pwd)/$(basename -- "$DATA_DIR")" || DATA_DIR="$(resolve_data_dir)"
 fi
@@ -611,38 +551,16 @@ fi
 trap 'die "命令失败（脚本第 ${LINENO} 行）"' ERR
 
 case "$COMMAND" in
-    home)
-        cmd_home
-        ;;
-    version)
-        cmd_version
-        ;;
-    app)
-        printf '%b\n' "${BOLD}AI Gateway Matrix 桌面应用${RESET}"
-        cmd_app "$@"
-        ;;
-    license)
-        cmd_license "$@"
-        ;;
-    status)
-        printf '%b\n' "${BOLD}AI Gateway Matrix${RESET}"
-        cmd_status
-        ;;
-    logs)
-        cmd_logs "$@"
-        ;;
-    stop)
-        printf '%b\n' "${BOLD}AI Gateway Matrix 停止${RESET}"
-        cmd_stop
-        ;;
-    restart)
-        printf '%b\n' "${BOLD}AI Gateway Matrix 重启${RESET}"
-        cmd_stop || true
-        printf '%b\n' "${BOLD}AI Gateway Matrix 一键启动${RESET}"
-        cmd_start
-        ;;
-    start)
-        printf '%b\n' "${BOLD}AI Gateway Matrix 一键启动${RESET}"
-        cmd_start
-        ;;
+    home) cmd_home ;;
+    version) cmd_version ;;
+    jiyi) printf '%b\n' "${BOLD}记忆文件 jiyi.txt${RESET}"; cmd_jiyi "$@" ;;
+    backup) printf '%b\n' "${BOLD}备份${RESET}"; cmd_backup "$@" ;;
+    restore) printf '%b\n' "${BOLD}恢复${RESET}"; cmd_restore "$@" ;;
+    app) printf '%b\n' "${BOLD}桌面应用${RESET}"; cmd_app "$@" ;;
+    license) cmd_license "$@" ;;
+    status) cmd_status ;;
+    logs) cmd_logs "$@" ;;
+    stop) printf '%b\n' "${BOLD}停止${RESET}"; cmd_stop ;;
+    restart) cmd_stop || true; cmd_start ;;
+    start) printf '%b\n' "${BOLD}启动${RESET}"; cmd_start ;;
 esac
