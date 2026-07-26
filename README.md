@@ -1,12 +1,8 @@
 <p align="center">
-  <img src="./app/desktop/icon.png" width="96" alt="AI Gateway Matrix">
+  <img src="./assets/readme/hero.svg" width="100%" alt="AI Gateway Matrix 将多个模型渠道路由到一个 OpenAI 兼容 API">
 </p>
 
-<h1 align="center">AI Gateway Matrix</h1>
-
 <p align="center"><strong>把分散的 LLM 渠道，收进一个 OpenAI-compatible API。</strong></p>
-
-<p align="center">本地部署 · 智能分档 · 故障换路 · 中文控制台 · 用量与积分账本</p>
 
 <p align="center">
   <img alt="Version" src="https://img.shields.io/badge/version-1.0.0-2563eb">
@@ -23,7 +19,11 @@
   <a href="#本地开发">开发</a>
 </p>
 
-![AI Gateway Matrix 渠道控制台](./app/docs/assets/channel-dashboard.png)
+<p align="center">
+  <img src="./app/docs/assets/channel-dashboard.png" width="920" alt="AI Gateway Matrix 渠道控制台">
+  <br>
+  <sub>真实运行界面：渠道、优先级、健康与额度集中管理</sub>
+</p>
 
 AI Gateway Matrix 是一个面向个人开发者和小团队的本地优先 LLM 网关。你可以接入多个官方或聚合渠道，对客户端只提供一个标准 OpenAI API；网关再根据任务强度、渠道健康、额度与优先级选择模型，失败时自动切换可用路径。
 
@@ -92,8 +92,8 @@ docker compose version
 ### 2. 启动
 
 ```bash
-git clone https://github.com/dell121212/Private-API.git
-cd Private-API
+git clone https://github.com/dell121212/ai-gateway-matrix.git
+cd ai-gateway-matrix
 ./run.sh start
 ```
 
