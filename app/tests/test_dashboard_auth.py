@@ -73,7 +73,7 @@ def test_dashboard_local_mode_needs_no_second_login_and_blocks_cross_site(monkey
             headers={"Origin": "http://127.0.0.1:4000", "Host": "127.0.0.1:4000"},
         )
     )
-    legacy_origin_status, _, _ = asyncio.run(
+    removed_legacy_origin_status, _, _ = asyncio.run(
         _asgi_get(
             backend.app,
             "/api/auth/verify",
@@ -90,7 +90,7 @@ def test_dashboard_local_mode_needs_no_second_login_and_blocks_cross_site(monkey
 
     assert status == 200
     assert same_origin_status == 200
-    assert legacy_origin_status == 200
+    assert removed_legacy_origin_status == 403
     assert body == {"authenticated": True, "mode": "local"}
     assert cross_site_status == 403
     assert "access-control-allow-origin" not in headers

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -13,7 +12,7 @@ from dashboard.app.core.logging import setup_logging
 from dashboard.app.modules.api_keys.router import router as api_keys_router
 from dashboard.app.modules.audit.router import router as audit_router
 from dashboard.app.modules.auth.router import router as auth_router
-from dashboard.app.modules.billing.router import router as billing_router
+from dashboard.app.modules.observability.router import router as observability_router
 from dashboard.app.modules.pricing.router import router as pricing_router
 from dashboard.app.modules.realtime.router import router as realtime_router
 from dashboard.app.modules.system.router import router as system_router
@@ -26,7 +25,7 @@ logger = setup_logging("private_api.mount")
 def mount_professional_api(app: FastAPI) -> None:
     app.include_router(auth_router)
     app.include_router(users_router)
-    app.include_router(billing_router)
+    app.include_router(observability_router)
     app.include_router(tasks_router)
     app.include_router(api_keys_router)
     app.include_router(realtime_router)

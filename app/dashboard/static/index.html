@@ -1616,6 +1616,7 @@ const ROUTE_MODES = {
 };
 
 let channels = [];
+let globalSummary = null;
 let activeTier = "全部";
 let tickInterval = null;
 let searchQuery = "";
@@ -1996,6 +1997,12 @@ async function fetchChannels(options = {}) {
       const data = await res.json();
       channels = data.channels || [];
       try {
+        const summaryRes = await apiFetch("/api/summary");
+        if (summaryRes.ok) globalSummary = await summaryRes.json();
+      } catch (_summaryErr) {
+        // 渠道卡仍可正常刷新；全局统计保留上一次成功值。
+      }
+      try {
         // force=true：保存成功后强制关掉编辑框并整卡更新
         render({ preserveScroll: true, force });
       } catch (renderErr) {
@@ -2022,7 +2029,7 @@ async function fetchChannels(options = {}) {
     const detail = lastErr && lastErr.message ? esc(lastErr.message) : "网络错误";
     root.innerHTML =
       `<div class="empty-state">无法连接到仪表盘后端`
-      + `<div class="hint">确认已启动：bash run.sh · 打开 http://127.0.0.1:4000 或 :8080`
+      + `<div class="hint">确认已启动：bash run.sh · 打开 http://127.0.0.1:4000`
       + `<br>详情：${detail}</div></div>`;
   }
 }
@@ -3648,6 +3655,13 @@ function renderHeroStats() {
       savedCostToday += v.day;
       anySavingsData = true;
     }
+  }
+  // 总 Token 必须使用 Redis 全账本汇总：它包含已删除/改名渠道的历史，
+  // 不能只把当前仍在 config.yaml 的渠道相加。
+  if (globalSummary) {
+    totalTokensToday = Number(globalSummary.total_tokens_today || 0);
+    totalTokensAlltime = Number(globalSummary.total_tokens_alltime || 0);
+    anyUsageAvailable = true;
   }
   // 累计节省：免费层市场等值（小模型已按规模打折）
   const alltimeSavingsDisplay = anyAlltimeSavingsData

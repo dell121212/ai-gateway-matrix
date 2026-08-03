@@ -5,13 +5,13 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dashboard.app.core.ids import generate_client_key, key_prefix_fingerprint
 from dashboard.app.core.security import has_permission
-from dashboard.app.db.models import ApiKey, AuditLog, CreditAccount
+from dashboard.app.db.models import ApiKey, AuditLog
 from dashboard.app.db.session import get_db
 from dashboard.app.modules.deps import AuthContext, require_user
 
@@ -24,8 +24,6 @@ class CreateKeyBody(BaseModel):
     allowed_models: Optional[List[str]] = None
     rpm_limit: Optional[int] = None
     tpm_limit: Optional[int] = None
-    request_budget_microcredits: Optional[int] = None
-    daily_budget_microcredits: Optional[int] = None
 
 
 @router.get("")
@@ -62,17 +60,11 @@ async def create_key(
     assert ctx.user
     if body.default_mode not in ("strict", "agent-stream"):
         raise HTTPException(400, detail={"code": "invalid_mode", "message": "default_mode 非法"})
-    ar = await db.execute(
-        select(CreditAccount).where(CreditAccount.user_id == ctx.user.id).limit(1)
-    )
-    acc = ar.scalar_one_or_none()
-    if not acc:
-        raise HTTPException(400, detail={"code": "no_account", "message": "用户无积分账户"})
     raw = generate_client_key()
     prefix, kh = key_prefix_fingerprint(raw)
     row = ApiKey(
         user_id=ctx.user.id,
-        credit_account_id=acc.id,
+        credit_account_id=None,
         key_hash=kh,
         key_prefix=prefix,
         alias=body.alias,
@@ -80,8 +72,6 @@ async def create_key(
         allowed_models=body.allowed_models,
         rpm_limit=body.rpm_limit,
         tpm_limit=body.tpm_limit,
-        request_budget_microcredits=body.request_budget_microcredits,
-        daily_budget_microcredits=body.daily_budget_microcredits,
         status="active",
     )
     db.add(row)

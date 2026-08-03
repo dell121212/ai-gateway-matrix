@@ -16,10 +16,18 @@ def test_internal_url_policy():
     assert not desktop_app._is_internal("https://example.com/x")
 
 
+def test_backend_control_scheme_is_strictly_scoped():
+    assert desktop_app._backend_action_from_url("ai-gateway://backend/start") == "start"
+    assert desktop_app._backend_action_from_url("ai-gateway://backend/restart") == "restart"
+    assert desktop_app._backend_action_from_url("ai-gateway://backend/stop") == "stop"
+    assert desktop_app._backend_action_from_url("ai-gateway://backend/delete") is None
+    assert desktop_app._backend_action_from_url("https://example.com/backend/stop") is None
+
+
 def test_dashboard_url_marks_app_shell():
     url = desktop_app.dashboard_url()
     assert "app=1" in url
-    assert url.startswith("http://127.0.0.1:4000/")
+    assert url.startswith("http://127.0.0.1:4000/console/")
 
 
 def test_desktop_assets_exist():

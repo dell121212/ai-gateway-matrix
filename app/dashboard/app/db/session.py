@@ -72,3 +72,10 @@ async def ensure_schema() -> None:
     async with engine.begin() as conn:
         await conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
         await conn.run_sync(Base.metadata.create_all)
+        if conn.dialect.name == "postgresql":
+            # create_all does not add columns to existing installations. Keep the
+            # bootstrap path self-upgrading even when Alembic is not invoked.
+            from dashboard.app.db.schema_upgrade import ALTER_OBSERVABILITY_STATEMENTS
+
+            for statement in ALTER_OBSERVABILITY_STATEMENTS:
+                await conn.execute(text(statement))

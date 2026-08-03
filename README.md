@@ -5,7 +5,7 @@
 <p align="center"><strong>把分散的 LLM 渠道，收进一个 OpenAI-compatible API。</strong></p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.0.0-2563eb">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.4.0-2563eb">
   <img alt="Docker Compose" src="https://img.shields.io/badge/Docker_Compose-v2-2496ed?logo=docker&logoColor=white">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.12+-3776ab?logo=python&logoColor=white">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-16a34a">
@@ -39,7 +39,7 @@ AI Gateway Matrix 是一个面向个人开发者和小团队的本地优先 LLM 
 | 智能任务分档 | 按弱、中、强、顶级四档选择模型；也可以固定档位，行为可预测 |
 | 失败自动换路 | 渠道超时、限流或回答质检失败时，冷却异常节点并尝试同档候选 |
 | 渠道控制台 | 填写 Key、调整优先级与档位、检查余额和连接状态 |
-| 账本与审计 | PostgreSQL 保存请求、积分、任务和审计数据，Redis 承担实时状态 |
+| 用量与审计 | PostgreSQL 保存调用、Token、成本、延迟、路由与审计数据，Redis 承担实时状态 |
 | 本地优先 | 管理入口默认只监听 `127.0.0.1`，Key 与数据库都留在用户数据目录 |
 | 可迁移 | 一条命令备份或恢复配置、Key、Redis 与 PostgreSQL 数据 |
 
@@ -48,7 +48,7 @@ AI Gateway Matrix 是一个面向个人开发者和小团队的本地优先 LLM 
 - 给 Codex、Cline、Roo Code、Cursor 或内部工具提供统一模型入口
 - 混合使用免费层、试用额度、付费渠道与聚合渠道
 - 在个人电脑或可信内网主机上自托管
-- 需要中文渠道管理、请求明细、积分账本和健康检查
+- 需要中文渠道管理、调用明细、用量成本分析和健康检查
 
 ### 不适合
 
@@ -58,17 +58,17 @@ AI Gateway Matrix 是一个面向个人开发者和小团队的本地优先 LLM 
 
 ## 界面
 
-以下截图来自本仓库 `1.0.0` 在本机 Docker Compose 中的真实运行实例，不是设计稿。
+以下截图来自本仓库在本机 Docker Compose 中的真实运行实例，不是设计稿。
 
 ### 专业控制台
 
-请求、任务、积分、API Key、定价、审计和系统状态集中在 `/console`。
+调用、任务、用量、API Key、定价、审计和系统状态集中在 `/console`。
 
 ![专业控制台总览](./app/docs/assets/console-overview.png)
 
 ### 运行状态
 
-健康页直接检查 PostgreSQL、Redis、认证模式、账本 schema 和当前版本。
+健康页直接检查 PostgreSQL、Redis、认证模式、统计 schema 和当前版本。
 
 ![系统健康检查](./app/docs/assets/system-health.png)
 
@@ -94,24 +94,25 @@ docker compose version
 ```bash
 git clone https://github.com/dell121212/ai-gateway-matrix.git
 cd ai-gateway-matrix
-./run.sh start
+./run.sh
 ```
 
-首次启动会：
+无参数默认打开新的 Appica 桌面控制台，并在需要时自动启动后端。首次启动会：
 
 1. 在仓库根目录创建 `home/` 用户数据目录；
 2. 自动生成网关、Redis 和 PostgreSQL 的内部密钥；
 3. 拉取并构建所需容器；
 4. 等待全部服务通过健康检查。
 
+如需原 AppFlowy/Flutter 兼容界面，可显式执行 `./run.sh flutter`；只启动后端则执行 `./run.sh start`。
+
 启动完成后打开：
 
 | 地址 | 用途 |
 |---|---|
 | `http://127.0.0.1:4000` | 经典渠道台：添加上游 Key、调整路由、创建客户端 Key |
-| `http://127.0.0.1:4000/console` | 专业控制台：任务、请求、积分、审计与健康 |
+| `http://127.0.0.1:4000/console` | 专业控制台：用量、调用、任务、审计与健康 |
 | `http://127.0.0.1:4000/v1` | OpenAI-compatible API Base URL |
-| `http://127.0.0.1:8080` | 兼容旧书签，与 `4000` 指向同一个 Dashboard |
 
 ### 3. 接入第一个渠道
 
@@ -172,7 +173,7 @@ print(response.choices[0].message.content)
 
 | 模型名 | 行为 | 典型任务 |
 |---|---|---|
-| `auto-route` | 智能判断任务强度后选择档位 | 默认推荐 |
+| `auto-route` | 智能判断任务强度；再综合成功率、剩余额度、延迟与成本选路 | 默认推荐 |
 | `mode-weak` | 固定走弱档 | 分类、提取、短摘要 |
 | `mode-mid` | 固定走中档 | 写作、翻译、普通编程 |
 | `mode-strong` | 固定走强档 | 代码分析、多约束任务 |
@@ -215,13 +216,13 @@ X-PrivateAPI-Mode: strict
 ```mermaid
 flowchart LR
     C[OpenAI-compatible 客户端] --> D[Dashboard 统一入口 :4000]
-    D --> A[鉴权 / 请求模式 / 积分预留]
+    D --> A[鉴权 / 请求模式 / 调用观察]
     A --> G[LiteLLM Proxy]
     G --> R[分档 / 健康 / 额度 / 优先级路由]
     R --> P1[官方渠道]
     R --> P2[聚合渠道]
     R --> P3[自定义 OpenAI-compatible 渠道]
-    D --> PG[(PostgreSQL<br/>账本与审计)]
+    D --> PG[(PostgreSQL<br/>调用事实、聚合与审计)]
     D --> RD[(Redis<br/>实时状态与事件)]
 ```
 
@@ -231,10 +232,10 @@ flowchart LR
 |---|---|
 | LiteLLM | OpenAI 协议兼容、供应商适配与基础路由 |
 | `gateway/` | 任务分档、配额、质量检查、冷却与自动修复 |
-| FastAPI Dashboard | 管理 API、透明代理、鉴权、账本与实时任务 |
+| FastAPI Dashboard | 管理 API、透明代理、鉴权、用量分析与实时任务 |
 | React Console | 专业控制台 |
-| PostgreSQL | 用户、请求、积分流水、定价与审计真账 |
-| Redis | 渠道状态、用量聚合、实时事件与临时协调 |
+| PostgreSQL | 用户、调用事实、小时/天聚合、配额快照、定价与审计 |
+| Redis | 渠道实时状态、窗口计数、实时事件与临时协调 |
 
 ## 数据与安全
 
@@ -277,9 +278,9 @@ Private-API/
 2. 将 `DASHBOARD_AUTH` 改为 `token` 或 `accounts`；
 3. 限制来源 IP；
 4. 使用防火墙保护宿主机；
-5. 将严格计费场景的 `BILLING_FAIL_MODE` 改为 `closed`。
+5. 自定义上游默认只允许公共网络地址；可信本地上游才设置 `ALLOW_PRIVATE_CUSTOM_API=1`。
 
-> 默认 `BILLING_FAIL_MODE=open` 以保证个人网关在账本暂时不可用时仍能调用模型。它不适合“账本失败就必须拒绝请求”的收费服务。
+> 本项目是个人网关，不提供积分账本，也不会因“余额不足”拒绝模型调用。成本仅用于统计。
 
 修改 `home/.env` 后重启：
 
@@ -290,7 +291,10 @@ Private-API/
 ## 日常运维
 
 ```bash
+./run.sh                        # Appica 桌面控制台（默认）
+./run.sh flutter                # Flutter 兼容界面
 ./run.sh status                 # 容器与健康状态
+./run.sh doctor                 # 配置、Provider、权限与在线状态自检
 ./run.sh logs --tail=200        # 最近日志
 ./run.sh logs -f                # 持续跟踪日志
 ./run.sh restart                # 重启
@@ -309,7 +313,8 @@ Private-API/
 
 备份包含 `.env`、配置、状态、Redis 和 PostgreSQL 数据。归档内含 API Key，应像密码文件一样保管。
 
-也可以使用单文件记忆：
+也可以使用单文件记忆；服务运行时会把 Key、设置、调用统计、配额快照和累计
+Token 自动同步进 `jiyi.txt`，正常使用无需手动保存：
 
 ```bash
 ./run.sh jiyi save
@@ -335,7 +340,7 @@ pip install \
   -r app/dashboard/requirements.txt
 
 cd app
-pytest tests/billing tests/test_run_script.py -q
+pytest tests/test_observability.py tests/test_routing_strategies.py tests/test_jiyi_store.py -q
 ruff check gateway dashboard scripts tests
 ```
 
@@ -355,12 +360,12 @@ npm run build
 ```text
 app/
 ├── dashboard/
-│   ├── app/               # 模块化 FastAPI 后台、数据库与账本
+│   ├── app/               # 模块化 FastAPI 后台、数据库与用量统计
 │   ├── frontend/          # React + Vite 专业控制台
 │   └── backend.py         # 经典渠道台与统一代理入口
 ├── gateway/               # 路由、配额、质检、健康与自动修复
-├── scripts/               # 配置校验、健康检查、巡检与对账
-├── tests/                 # 单元、集成与计费测试
+├── scripts/               # 配置校验、健康检查、巡检与迁移
+├── tests/                 # 单元、集成与统计测试
 ├── packaging/             # Debian 打包
 ├── desktop/               # 桌面入口
 └── docker-compose.yml

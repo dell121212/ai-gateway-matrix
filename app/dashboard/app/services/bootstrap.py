@@ -1,4 +1,4 @@
-"""Bootstrap schema, admin user, default pricing, key migration."""
+"""Bootstrap schema, admin user, model prices and key migration."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from dashboard.app.core.config import get_settings
 from dashboard.app.core.logging import setup_logging
 from dashboard.app.core.security import hash_password
-from dashboard.app.db.models import CreditAccount, PricingVersion, User
+from dashboard.app.db.models import PricingVersion, User
 from dashboard.app.db.session import ensure_schema, get_session_factory
 from dashboard.app.services.key_migration import migrate_client_keys_file
 
@@ -20,7 +20,14 @@ logger = setup_logging("private_api.bootstrap")
 
 
 async def bootstrap_all() -> dict:
-    report: dict = {"schema": False, "admin": None, "pricing": False, "key_migration": None}
+    report: dict = {
+        "schema": False,
+        "database_restore": None,
+        "redis_restore": None,
+        "admin": None,
+        "pricing": False,
+        "key_migration": None,
+    }
     try:
         await ensure_schema()
         report["schema"] = True
@@ -28,6 +35,43 @@ async def bootstrap_all() -> dict:
         logger.error("schema bootstrap failed: %s", exc)
         report["schema_error"] = str(exc)
         return report
+
+    snapshot = Path(
+        os.environ.get("JIYI_DATABASE_SNAPSHOT")
+        or Path(__file__).resolve().parents[3]
+        / "state"
+        / "private-api-export.json.gz"
+    )
+    try:
+        from scripts.jiyi_database import restore_snapshot_if_empty
+
+        report["database_restore"] = await restore_snapshot_if_empty(
+            get_settings().async_database_url(),
+            snapshot,
+        )
+    except Exception as exc:
+        logger.error("jiyi database restore skipped/failed: %s", exc)
+        report["database_restore"] = f"error:{exc}"
+
+    redis_snapshot = Path(
+        os.environ.get("JIYI_REDIS_SNAPSHOT")
+        or Path(__file__).resolve().parents[3]
+        / "state"
+        / "gateway-redis-export.json.gz"
+    )
+    try:
+        from scripts.jiyi_redis import restore_snapshot_missing
+
+        settings = get_settings()
+        report["redis_restore"] = await restore_snapshot_missing(
+            settings.redis_host,
+            settings.redis_port,
+            settings.redis_password,
+            redis_snapshot,
+        )
+    except Exception as exc:
+        logger.error("jiyi redis restore skipped/failed: %s", exc)
+        report["redis_restore"] = f"error:{exc}"
 
     factory = get_session_factory()
     async with factory() as session:
@@ -39,9 +83,8 @@ async def bootstrap_all() -> dict:
         )
         admin = await _get_admin(session)
         if admin:
-            acc = await _get_or_create_account(session, admin)
             report["key_migration"] = await migrate_client_keys_file(
-                session, Path(store), default_user=admin, default_account=acc
+                session, Path(store), default_user=admin
             )
         await session.commit()
     return report
@@ -57,8 +100,7 @@ async def ensure_admin(session: AsyncSession) -> dict:
     existing = await session.execute(select(User).where(User.username == settings.bootstrap_admin_username))
     user = existing.scalar_one_or_none()
     if user:
-        acc = await _get_or_create_account(session, user)
-        return {"created": False, "username": user.username, "account_id": str(acc.id)}
+        return {"created": False, "username": user.username}
 
     password = settings.bootstrap_admin_password or os.environ.get("BOOTSTRAP_ADMIN_PASSWORD")
     generated = False
@@ -91,40 +133,12 @@ async def ensure_admin(session: AsyncSession) -> dict:
     )
     session.add(user)
     await session.flush()
-    acc = CreditAccount(
-        user_id=user.id,
-        balance_microcredits=settings.initial_user_microcredits,
-        reserved_microcredits=0,
-        status="active",
-    )
-    session.add(acc)
-    await session.flush()
     return {
         "created": True,
         "username": user.username,
-        "account_id": str(acc.id),
         "password_generated": generated,
         "password_file": "state/bootstrap-admin.txt" if generated else None,
     }
-
-
-async def _get_or_create_account(session: AsyncSession, user: User) -> CreditAccount:
-    r = await session.execute(
-        select(CreditAccount).where(CreditAccount.user_id == user.id).limit(1)
-    )
-    acc = r.scalar_one_or_none()
-    if acc:
-        return acc
-    settings = get_settings()
-    acc = CreditAccount(
-        user_id=user.id,
-        balance_microcredits=settings.initial_user_microcredits,
-        reserved_microcredits=0,
-        status="active",
-    )
-    session.add(acc)
-    await session.flush()
-    return acc
 
 
 async def ensure_default_pricing(session: AsyncSession) -> bool:

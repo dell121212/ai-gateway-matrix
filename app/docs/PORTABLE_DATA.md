@@ -30,7 +30,7 @@ export AI_GATEWAY_HOME=/path/to/my-agm-data
 ai-gateway-matrix start
 ```
 
-## 记忆文件 jiyi.txt（单文件保留全部设置与 Key）
+## 记忆文件 jiyi.txt（单文件保留 Key、设置、操作与 Token）
 
 源码模式默认：`仓库根/jiyi.txt`（本机即 `/home/chenkai/文档/api/jiyi.txt`）。  
 安装模式默认：`$AI_GATEWAY_HOME/jiyi.txt`。  
@@ -43,7 +43,22 @@ ai-gateway-matrix start
 ./run.sh jiyi list
 ```
 
-`start` 成功后会自动 `jiyi save` 一次。  
+`start` 会在文件不存在时自动生成它，并启动 `jiyi-sync`：运行期间 `.env`、
+`config.yaml`、`provider_manifest.yaml`、`state/` 等发生变化后会自动合并写回；
+当前 V3 `state/client-keys.json` 会以 `0600` 权限保留客户端原始 Key，保证换机后仍可
+显示、复制和探测；LiteLLM 的客户端 Key 鉴权行也会随数据库逻辑快照恢复。账户、客户端
+Key 哈希、任务、调用明细、模型尝试、小时/天聚合、配额快照和审计日志会以
+一致性 PostgreSQL 快照一并保存；实时 Token、用量窗口和路由状态会以 Redis
+逻辑快照保存。文件变化约 2 秒内同步，数据库与 Redis 操作约 6 秒内同步。
+
+换机时只需把 `jiyi.txt` 放到项目根再首次执行 `./run.sh start`：启动器发现全新的
+用户数据目录后会自动导入；数据库快照只会恢复到空数据库，绝不覆盖或混合目标机
+已有数据。V2 不再导出积分账户或流水，但可继续读取 V1 旧快照并完成兼容恢复。
+也可以显式执行 `./run.sh jiyi load` 后再启动。
+
+对外只监听 `127.0.0.1:4000`：`/` 是中文渠道台，`/v1` 是 OpenAI 兼容
+API，`/console` 是专业控制台；三者是同一端口上的路径，不是三个后端。
+
 `jiyi.txt` 含密钥 → **chmod 600**，且已加入 `.gitignore`，勿提交。
 
 ## 一键备份 / 恢复（.tgz，含数据库目录）

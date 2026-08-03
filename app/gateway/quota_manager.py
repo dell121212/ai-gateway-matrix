@@ -144,7 +144,16 @@ async def mark_success(display_id: str) -> None:
         pass
 
 
-async def choose_and_reserve(candidates: Iterable[dict[str, Any]]) -> Optional[dict[str, Any]]:
+async def choose_and_reserve(
+    candidates: Iterable[dict[str, Any]], *, strategy: Optional[str] = None
+) -> Optional[dict[str, Any]]:
+    """按智脑已经生成的候选顺序选择首个可用渠道。
+
+    候选顺序包含用户优先级和智脑档位含义，额度与冷却仅负责排除当前
+    不可用项，不能在这里用统计分数再次改写业务决策。保留 strategy
+    参数是为了兼容旧调用方，但运行期不再据此重排。
+    """
+    del strategy
     for channel in candidates:
         if await cooldown_remaining(str(channel["display_id"])) > 0:
             continue

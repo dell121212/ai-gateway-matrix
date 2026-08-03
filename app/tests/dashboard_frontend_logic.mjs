@@ -2,16 +2,16 @@ import fs from "node:fs";
 import vm from "node:vm";
 
 const html = fs.readFileSync(new URL("../dashboard/static/index.html", import.meta.url), "utf8");
-if (!html.includes('id="apiBaseValue"') || !html.includes("AI API 控制台")) {
+if (!html.includes('id="apiBaseValue"') || !html.includes("连接到统一 API")) {
   throw new Error("Chinese unified API console is missing");
 }
 if (!html.includes("累计节省") || html.includes("预计累计花费")) {
   throw new Error("cumulative savings hero metric is missing");
 }
-if (!html.includes("智能添加免费 API") || !html.includes("deleteChannel('${ch.channel_id}')")) {
+if (!html.includes("智能添加 API") || !html.includes("deleteChannel('${ch.channel_id}')")) {
   throw new Error("custom API discovery or channel deletion UI is missing");
 }
-const start = html.indexOf("<script>") + "<script>".length;
+const start = html.lastIndexOf("<script>") + "<script>".length;
 const end = html.lastIndexOf("</script>");
 if (start < "<script>".length || end < start) throw new Error("dashboard script not found");
 
@@ -24,6 +24,7 @@ function element(id) {
       textContent: "",
       value: "",
       hidden: false,
+      style: {},
       dataset: {},
       listeners: {},
       classList: {
@@ -108,6 +109,12 @@ vm.runInContext(`
 
   if (fmtTokensM(3778) !== "0.0038M" || fmtTokensM(2500000) !== "2.50M") {
     throw new Error("token usage was not formatted in millions");
+  }
+  channels = [];
+  globalSummary = { total_tokens_today: 12, total_tokens_alltime: 3349532 };
+  renderHeroStats();
+  if (!document.getElementById("heroStats").innerHTML.includes("3.35M")) {
+    throw new Error("hero did not use the global token ledger");
   }
 
   const unknownQuota = renderQuotaPanel({

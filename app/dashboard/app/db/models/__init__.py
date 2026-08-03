@@ -6,9 +6,11 @@ from .entities import (
     CreditLedger,
     LlmAttempt,
     PricingVersion,
+    QuotaSnapshot,
     Session,
     Task,
     User,
+    UsageAggregate,
 )
 
 __all__ = [
@@ -21,5 +23,7 @@ __all__ = [
     "ClientRequest",
     "LlmAttempt",
     "PricingVersion",
+    "UsageAggregate",
+    "QuotaSnapshot",
     "AuditLog",
 ]

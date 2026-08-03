@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dashboard.app.core.security import has_permission
-from dashboard.app.db.models import AuditLog, CreditAccount, CreditLedger, User
+from dashboard.app.db.models import AuditLog, CreditAccount, CreditLedger
 from dashboard.app.db.session import get_db
 from dashboard.app.modules.deps import AuthContext, require_user
 from dashboard.app.services import billing_engine

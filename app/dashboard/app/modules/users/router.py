@@ -1,16 +1,13 @@
 from __future__ import annotations
 
 import uuid
-from typing import Optional
-
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dashboard.app.core.config import get_settings
 from dashboard.app.core.security import has_permission, hash_password, password_strong_enough
-from dashboard.app.db.models import AuditLog, CreditAccount, User
+from dashboard.app.db.models import AuditLog, User
 from dashboard.app.db.session import get_db
 from dashboard.app.modules.deps import AuthContext, require_user
 
@@ -22,7 +19,6 @@ class UserCreate(BaseModel):
     password: str = Field(min_length=10)
     display_name: str = ""
     role: str = "user"
-    initial_microcredits: Optional[int] = None
 
 
 @router.get("")
@@ -62,7 +58,6 @@ async def create_user(
     exists = await db.execute(select(User).where(User.username == body.username.strip()))
     if exists.scalar_one_or_none():
         raise HTTPException(400, detail={"code": "exists", "message": "用户名已存在"})
-    settings = get_settings()
     user = User(
         username=body.username.strip(),
         password_hash=hash_password(body.password),
@@ -72,15 +67,6 @@ async def create_user(
     )
     db.add(user)
     await db.flush()
-    acc = CreditAccount(
-        user_id=user.id,
-        balance_microcredits=body.initial_microcredits
-        if body.initial_microcredits is not None
-        else settings.initial_user_microcredits,
-        reserved_microcredits=0,
-        status="active",
-    )
-    db.add(acc)
     db.add(
         AuditLog(
             actor_user_id=ctx.user.id,
@@ -91,7 +77,7 @@ async def create_user(
         )
     )
     await db.commit()
-    return {"id": str(user.id), "account_id": str(acc.id)}
+    return {"id": str(user.id)}
 
 
 @router.post("/{user_id}/disable")

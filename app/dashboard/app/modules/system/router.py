@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from fastapi import APIRouter, Depends
@@ -7,10 +8,11 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dashboard.app.core.config import get_settings
-from dashboard.app.db.models import ClientRequest, CreditLedger, Task
-from dashboard.app.db.session import get_db, get_engine
+from dashboard.app.db.models import ClientRequest, Task
+from dashboard.app.db.session import get_db
 from dashboard.app.modules.deps import AuthContext, require_user
 from dashboard.app.services import events
+from dashboard.app.services.jiyi_status import read_jiyi_status, request_jiyi_sync
 
 router = APIRouter(prefix="/api/v1/system", tags=["system"])
 
@@ -36,7 +38,7 @@ async def health(db: AsyncSession = Depends(get_db)):
         "ok": pg_ok,
         "postgres": pg_ok,
         "redis": redis_ok,
-        "billing_fail_mode": settings.billing_fail_mode,
+        "observation_mode": "usage-and-cost",
         "auth_mode": settings.dashboard_auth,
         "version": version,
         "schema": settings.db_schema,
@@ -56,12 +58,19 @@ async def stats(ctx: AuthContext = Depends(require_user), db: AsyncSession = Dep
         ).scalar()
         or 0
     )
-    settled = int(
+    token_totals = (
+        await db.execute(
+            select(
+                func.coalesce(func.sum(ClientRequest.final_prompt_tokens), 0),
+                func.coalesce(func.sum(ClientRequest.final_completion_tokens), 0),
+                func.coalesce(func.sum(ClientRequest.cost_microusd), 0),
+            ).where(ClientRequest.started_at >= start)
+        )
+    ).one()
+    all_tokens = int(
         (
             await db.execute(
-                select(func.coalesce(func.sum(ClientRequest.settled_microcredits), 0)).where(
-                    ClientRequest.started_at >= start
-                )
+                select(func.coalesce(func.sum(ClientRequest.final_prompt_tokens + ClientRequest.final_completion_tokens), 0))
             )
         ).scalar()
         or 0
@@ -72,19 +81,38 @@ async def stats(ctx: AuthContext = Depends(require_user), db: AsyncSession = Dep
         ).scalar()
         or 0
     )
-    unsettle = int(
+    in_flight = int(
         (
             await db.execute(
                 select(func.count())
                 .select_from(ClientRequest)
-                .where(ClientRequest.status.in_(["reserved", "running", "pending"]))
+                .where(ClientRequest.status.in_(["running", "pending"]))
             )
         ).scalar()
         or 0
     )
     return {
         "today_requests": req_count,
-        "today_settled_microcredits": settled,
+        "today_cost_microusd": int(token_totals[2] or 0),
         "active_tasks": active_tasks,
-        "unsettled_requests": unsettle,
+        "in_flight_requests": in_flight,
+        "today_prompt_tokens": int(token_totals[0] or 0),
+        "today_completion_tokens": int(token_totals[1] or 0),
+        "today_tokens": int(token_totals[0] or 0) + int(token_totals[1] or 0),
+        "total_tokens": all_tokens,
     }
+
+
+def _jiyi_state_dir() -> Path:
+    return Path(os.environ.get("JIYI_STATE_DIR", "/app/state")).resolve()
+
+
+@router.get("/jiyi")
+async def jiyi_status(ctx: AuthContext = Depends(require_user)):
+    return read_jiyi_status(_jiyi_state_dir())
+
+
+@router.post("/jiyi/save")
+async def save_jiyi(ctx: AuthContext = Depends(require_user)):
+    actor = ctx.user.username if ctx.user else "local"
+    return request_jiyi_sync(_jiyi_state_dir(), actor=actor)

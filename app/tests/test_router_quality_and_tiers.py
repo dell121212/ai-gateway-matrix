@@ -287,10 +287,16 @@ class RouterQualityAndTierTests(unittest.TestCase):
             ):
                 restricted.append((pool, model))
 
-        self.assertNotIn("gemini/gemini-2.5-pro", [model for _, model in gemini])
-        self.assertIn((STRONG_POOL, "gemini/gemini-3.5-flash"), gemini)
+        self.assertIn((STRONG_POOL, "gemini/gemini-2.5-pro"), gemini)
+        self.assertIn((FREE_POOL, "gemini/gemini-3.5-flash"), gemini)
         self.assertTrue(restricted)
-        self.assertTrue(all(pool == FAST_POOL for pool, _ in restricted))
+        # 按模型能力分档，不能因为同属某个厂商就把 8B 与 120B 一刀切。
+        self.assertTrue({
+            (FAST_POOL, "sambanova/Meta-Llama-3.1-8B-Instruct"),
+            (FAST_POOL, "openai/Qwen/Qwen2.5-7B-Instruct"),
+            (STRONG_POOL, "sambanova/Meta-Llama-3.3-70B-Instruct"),
+            (ELITE_POOL, "groq/openai/gpt-oss-120b"),
+        }.issubset(set(restricted)))
         # 闭环：router 层负责同池换 peer（质检失败 / 429）；litellm 层不再叠重试
         self.assertGreaterEqual(int(config["router_settings"]["num_retries"]), 2)
         self.assertEqual(int(config["litellm_settings"]["num_retries"]), 0)

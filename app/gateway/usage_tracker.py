@@ -403,6 +403,64 @@ async def get_usage(channel_id: str) -> dict:
         return default
 
 
+async def get_global_usage() -> dict:
+    """汇总 Redis 中全部历史账本，包括已删除/改名渠道的旧 usage key。"""
+
+    client = _get_client()
+    default = {
+        "available": False,
+        "day_tokens": 0,
+        "total_tokens": 0,
+        "day_cost": None,
+        "total_cost": None,
+        "ledger_count": 0,
+    }
+    if client is None:
+        return default
+
+    day_bucket, _day_ttl = _day_window()
+
+    async def scan_values(pattern: str, *, numeric_type):
+        keys = []
+        async for key in client.scan_iter(match=pattern, count=1000):
+            keys.append(key)
+        values = []
+        for key in keys:
+            value = await client.get(key)
+            if value is not None:
+                values.append(numeric_type(value))
+        return values
+
+    try:
+        day_tokens = await scan_values(
+            f"{KEY_PREFIX}:*:day:{day_bucket}:tokens",
+            numeric_type=int,
+        )
+        total_tokens = await scan_values(
+            f"{KEY_PREFIX}:*:total:tokens",
+            numeric_type=int,
+        )
+        day_costs = await scan_values(
+            f"{KEY_PREFIX}:*:day:{day_bucket}:cost",
+            numeric_type=float,
+        )
+        total_costs = await scan_values(
+            f"{KEY_PREFIX}:*:total:cost",
+            numeric_type=float,
+        )
+        return {
+            "available": True,
+            "day_tokens": sum(day_tokens),
+            "total_tokens": sum(total_tokens),
+            "day_cost": sum(day_costs) if day_costs else None,
+            "total_cost": sum(total_costs) if total_costs else None,
+            "ledger_count": len(total_tokens),
+        }
+    except Exception as exc:
+        logger.debug("[ai-gateway-matrix] 全局用量查询失败: %s", exc)
+        return default
+
+
 async def get_usage_merged(channel_ids: list[str]) -> dict:
     """合并多个 usage 账本（用于 cred: 新键 + 旧「模型@base#hash」历史键）。
 

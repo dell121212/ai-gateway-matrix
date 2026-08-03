@@ -15,9 +15,11 @@ class StreamAccumulator:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cached_tokens: int = 0
+    cache_creation_tokens: int = 0
     reasoning_tokens: int = 0
     finish_reason: Optional[str] = None
     model: Optional[str] = None
+    service_tier: Optional[str] = None
     first_token_seen: bool = False
     usage_from_upstream: bool = False
     raw_usage: dict[str, Any] = field(default_factory=dict)
@@ -50,6 +52,8 @@ def _ingest_chunk(data: dict[str, Any], acc: StreamAccumulator) -> None:
         return
     if data.get("model"):
         acc.model = str(data["model"])
+    if data.get("service_tier"):
+        acc.service_tier = str(data["service_tier"])
     usage = data.get("usage")
     if isinstance(usage, dict):
         acc.usage_from_upstream = True
@@ -59,6 +63,12 @@ def _ingest_chunk(data: dict[str, Any], acc: StreamAccumulator) -> None:
         details = usage.get("prompt_tokens_details") or {}
         if isinstance(details, dict):
             acc.cached_tokens = int(details.get("cached_tokens") or acc.cached_tokens or 0)
+            acc.cache_creation_tokens = int(
+                details.get("cache_creation_tokens")
+                or details.get("cache_write_tokens")
+                or acc.cache_creation_tokens
+                or 0
+            )
         cdetails = usage.get("completion_tokens_details") or {}
         if isinstance(cdetails, dict):
             acc.reasoning_tokens = int(

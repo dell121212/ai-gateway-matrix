@@ -13,6 +13,7 @@ WORKDIR /app
 
 COPY dashboard/requirements.txt /app/dashboard/requirements.txt
 RUN pip install --no-cache-dir -r /app/dashboard/requirements.txt
+COPY VERSION /app/VERSION
 
 # 预置 React 构建产物（运行时 volume 挂载 dashboard 时仍可用镜像内 dist 兜底）
 COPY --from=frontend /frontend/dist /app/dashboard/frontend/dist

@@ -102,7 +102,14 @@ exit 2
     return fake_bin
 
 
-def _run(project: Path, fake_bin: Path, *, state: str = "running", args: list[str] | None = None):
+def _run(
+    project: Path,
+    fake_bin: Path,
+    *,
+    state: str = "running",
+    args: list[str] | None = None,
+    extra_env: dict[str, str] | None = None,
+):
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     # run.sh 健康检查匹配 *healthy*，默认带 healthy 字样
@@ -112,6 +119,7 @@ def _run(project: Path, fake_bin: Path, *, state: str = "running", args: list[st
     env["STARTUP_TIMEOUT"] = "3"
     env.pop("AI_GATEWAY_HOME", None)
     env["AI_GATEWAY_LICENSE_BYPASS"] = "1"
+    env.update(extra_env or {})
     cmd = ["bash", "run.sh"] + (args or [])
     return subprocess.run(
         cmd,
@@ -144,7 +152,7 @@ def test_run_script_preserves_existing_env_and_syncs_new_keys(tmp_path: Path):
         if src.is_file():
             shutil.copy2(src, home / name)
 
-    first = _run(project, fake_bin)
+    first = _run(project, fake_bin, args=["start"])
     assert first.returncode == 0, first.stdout + first.stderr
     first_content = env_path.read_text(encoding="utf-8")
     assert "GLM_API_KEY=user-value\n" in first_content
@@ -271,6 +279,186 @@ def test_run_script_home_and_portable_data_layout(tmp_path: Path):
     assert (data / "config.yaml").is_file()
     assert (data / "provider_manifest.yaml").is_file()
     assert (data / "state").is_dir()
+    jiyi = project / "jiyi.txt"
+    assert jiyi.is_file()
+    assert "# AGM-JIYI-V1" in jiyi.read_text(encoding="utf-8")
+    assert jiyi.stat().st_mode & 0o777 == 0o600
+
+
+def test_start_auto_imports_existing_jiyi_into_fresh_home(tmp_path: Path):
+    project = _project_copy(tmp_path)
+    fake_bin = _fake_docker(tmp_path)
+    source = tmp_path / "source-home"
+    source.mkdir()
+    (source / ".env").write_text(
+        "GATEWAY_MASTER_KEY=sk-migrated\n"
+        "REDIS_PASSWORD=redis-migrated\n"
+        "POSTGRES_PASSWORD=postgres-migrated\n"
+        "MIGRATION_MARKER=one-file\n",
+        encoding="utf-8",
+    )
+    (source / "config.yaml").write_text("model_list: []\n", encoding="utf-8")
+    packed = subprocess.run(
+        [
+            "python3",
+            str(project / "app" / "scripts" / "jiyi_store.py"),
+            "save",
+            "--data-dir",
+            str(source),
+            "--jiyi",
+            str(project / "jiyi.txt"),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert packed.returncode == 0, packed.stdout + packed.stderr
+
+    started = _run(project, fake_bin, args=["start"])
+
+    assert started.returncode == 0, started.stdout + started.stderr
+    restored_env = (project / "home" / ".env").read_text(encoding="utf-8")
+    assert "MIGRATION_MARKER=one-file" in restored_env
+    assert "已从" in started.stdout and "自动导入迁移数据" in started.stdout
+
+
+def test_no_argument_launches_appica_desktop_console(tmp_path: Path):
+    project = _project_copy(tmp_path)
+    fake_bin = _fake_docker(tmp_path)
+    marker = tmp_path / "appica-launched.txt"
+    real_python = shutil.which("python3")
+    assert real_python is not None
+    fake_python = fake_bin / "python3"
+    fake_python.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [[ \"${1:-}\" == */desktop/app.py ]]; then\n"
+        "  printf '%s\\n' \"$@\" > \"$MOCK_APP_MARKER\"\n"
+        "  exit 0\n"
+        "fi\n"
+        f'exec "{real_python}" "$@"\n',
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+
+    launched = _run(
+        project,
+        fake_bin,
+        extra_env={"MOCK_APP_MARKER": str(marker)},
+    )
+
+    assert launched.returncode == 0, launched.stdout + launched.stderr
+    arguments = marker.read_text(encoding="utf-8").splitlines()
+    assert arguments[0].endswith("/app/desktop/app.py")
+    assert "--no-start" in arguments
+    assert "正在打开 Appica 桌面控制台" in launched.stdout
+
+
+def test_flutter_command_launches_release_and_wires_backend_launcher(
+    tmp_path: Path,
+):
+    project = _project_copy(tmp_path)
+    fake_bin = _fake_docker(tmp_path)
+    bundle = (
+        project
+        / "app"
+        / "appflowy_gateway"
+        / "frontend"
+        / "appflowy_flutter"
+        / "build"
+        / "linux"
+        / "x64"
+        / "release"
+        / "bundle"
+    )
+    (bundle / "lib").mkdir(parents=True)
+    (bundle / "data").mkdir()
+    executable = bundle / "AppFlowy"
+    executable.write_text(
+        "#!/usr/bin/env bash\n"
+        "{\n"
+        "  printf '%s\\n' \"$AI_GATEWAY_LAUNCHER\"\n"
+        "  printf '%s\\n' \"$LD_LIBRARY_PATH\"\n"
+        "  printf '%s\\n' \"$AI_GATEWAY_HOME\"\n"
+        "} > \"$MOCK_APP_MARKER\"\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    marker = tmp_path / "flutter-launched.txt"
+
+    launched = _run(
+        project,
+        fake_bin,
+        args=["flutter"],
+        extra_env={"MOCK_APP_MARKER": str(marker)},
+    )
+
+    assert launched.returncode == 0, launched.stdout + launched.stderr
+    assert marker.is_file(), "run.sh flutter 没有启动 Flutter Release"
+    launcher, library_path, data_home = marker.read_text(
+        encoding="utf-8",
+    ).splitlines()
+    assert launcher == str(project / "run.sh")
+    assert library_path.split(os.pathsep)[0] == str(bundle / "lib")
+    assert data_home == str(project / "home")
+
+
+def test_flutter_command_reports_missing_system_library(tmp_path: Path):
+    project = _project_copy(tmp_path)
+    fake_bin = _fake_docker(tmp_path)
+    bundle = (
+        project
+        / "app"
+        / "appflowy_gateway"
+        / "frontend"
+        / "appflowy_flutter"
+        / "build"
+        / "linux"
+        / "x64"
+        / "release"
+        / "bundle"
+    )
+    (bundle / "lib").mkdir(parents=True)
+    (bundle / "data").mkdir()
+    executable = bundle / "AppFlowy"
+    executable.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+
+    fake_ldd = fake_bin / "ldd"
+    fake_ldd.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' 'libkeybinder-3.0.so.0 => not found'\n",
+        encoding="utf-8",
+    )
+    fake_ldd.chmod(0o755)
+
+    launched = _run(project, fake_bin, args=["flutter"])
+
+    assert launched.returncode == 1
+    assert "libkeybinder-3.0.so.0" in launched.stderr
+    assert "sudo apt-get install -y libkeybinder-3.0-0" in launched.stderr
+
+
+def test_flutter_command_rejects_stale_release(tmp_path: Path):
+    project = _project_copy(tmp_path)
+    fake_bin = _fake_docker(tmp_path)
+    flutter_project = (
+        project / "app" / "appflowy_gateway" / "frontend" / "appflowy_flutter"
+    )
+    bundle = flutter_project / "build" / "linux" / "x64" / "release" / "bundle"
+    (bundle / "lib").mkdir(parents=True)
+    (bundle / "data").mkdir()
+    executable = bundle / "AppFlowy"
+    executable.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+    release_library = bundle / "lib" / "libapp.so"
+    release_library.write_bytes(b"old release")
+    os.utime(release_library, (1, 1))
+
+    launched = _run(project, fake_bin, args=["flutter"])
+
+    assert launched.returncode == 1
+    assert "Flutter Release 早于界面源码" in launched.stderr
+    assert "flutter build linux --release --target lib/main_gateway.dart" in launched.stderr
 
 
 def test_compose_uses_code_dir_and_bind_data_paths():
@@ -280,6 +468,13 @@ def test_compose_uses_code_dir_and_bind_data_paths():
     assert "./data/postgres:/var/lib/postgresql/data" in compose
     assert "redis-data:" not in compose
     assert "postgres-data:" not in compose
+    assert "jiyi-sync:" in compose
+    assert "${AI_GATEWAY_JIYI_PATH:" in compose
+    assert '"/app/scripts/jiyi_store.py"' in compose
+    assert '"/data/state/gateway-redis-export.json.gz"' in compose
+    assert "JIYI_REDIS_SNAPSHOT=/app/state/gateway-redis-export.json.gz" in compose
+    assert '"127.0.0.1:4000:8080"' in compose
+    assert '"127.0.0.1:8080:8080"' not in compose
 
 
 def test_backup_restore_preserves_keys_and_config(tmp_path: Path):

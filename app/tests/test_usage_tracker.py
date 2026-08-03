@@ -1,4 +1,5 @@
 import asyncio
+import fnmatch
 from datetime import datetime
 
 from dashboard.quota_catalog import MONTH, build_rate_limits
@@ -39,6 +40,11 @@ class FakeRedis:
         if ex is not None:
             self.ttls[key] = ex
         return True
+
+    async def scan_iter(self, match="*", count=10):
+        for key in sorted(self.values):
+            if fnmatch.fnmatch(key, match):
+                yield key
 
 
 def test_same_env_shares_usage_key_across_models():
@@ -116,6 +122,36 @@ def test_duplicate_success_event_is_only_counted_once():
             ))
         prefix = f"{usage_tracker.KEY_PREFIX}:channel"
         assert fake.values[f"{prefix}:total:tokens"] == 10
+    finally:
+        usage_tracker._client = old_client
+        usage_tracker.aioredis = old_aioredis
+
+
+def test_global_usage_includes_legacy_and_removed_channel_ledgers():
+    fake = FakeRedis()
+    bucket, _ttl = usage_tracker._day_window()
+    prefix = usage_tracker.KEY_PREFIX
+    fake.values.update(
+        {
+            f"{prefix}:cred:CURRENT:total:tokens": 100,
+            f"{prefix}:legacy-model@base#hash:total:tokens": 200,
+            f"{prefix}:removed-model@base#hash:total:tokens": 300,
+            f"{prefix}:cred:CURRENT:day:{bucket}:tokens": 10,
+            f"{prefix}:legacy-model@base#hash:day:{bucket}:tokens": 20,
+            f"{prefix}:cred:CURRENT:total:cost": "0.25",
+            f"{prefix}:removed-model@base#hash:total:cost": "0.75",
+        }
+    )
+    old_client, old_aioredis = usage_tracker._client, usage_tracker.aioredis
+    usage_tracker._client = fake
+    usage_tracker.aioredis = object()
+    try:
+        result = asyncio.run(usage_tracker.get_global_usage())
+        assert result["available"] is True
+        assert result["total_tokens"] == 600
+        assert result["day_tokens"] == 30
+        assert result["total_cost"] == 1.0
+        assert result["ledger_count"] == 3
     finally:
         usage_tracker._client = old_client
         usage_tracker.aioredis = old_aioredis

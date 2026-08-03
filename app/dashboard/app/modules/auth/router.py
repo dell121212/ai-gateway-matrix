@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
@@ -18,7 +17,7 @@ from dashboard.app.core.security import (
     password_strong_enough,
     verify_password,
 )
-from dashboard.app.db.models import AuditLog, CreditAccount, Session as DbSession, User
+from dashboard.app.db.models import AuditLog, Session as DbSession, User
 from dashboard.app.db.session import get_db
 from dashboard.app.modules.deps import AuthContext, get_auth_context, require_user
 
@@ -64,7 +63,6 @@ async def auth_status(
 
 @router.post("/bootstrap")
 async def bootstrap_admin(body: BootstrapBody, db: AsyncSession = Depends(get_db)):
-    settings = get_settings()
     r = await db.execute(select(User).limit(1))
     if r.scalar_one_or_none():
         raise HTTPException(400, detail={"code": "already_bootstrapped", "message": "已有用户"})
@@ -79,13 +77,6 @@ async def bootstrap_admin(body: BootstrapBody, db: AsyncSession = Depends(get_db
     )
     db.add(user)
     await db.flush()
-    acc = CreditAccount(
-        user_id=user.id,
-        balance_microcredits=settings.initial_user_microcredits,
-        reserved_microcredits=0,
-        status="active",
-    )
-    db.add(acc)
     db.add(
         AuditLog(
             actor_user_id=user.id,
@@ -96,7 +87,7 @@ async def bootstrap_admin(body: BootstrapBody, db: AsyncSession = Depends(get_db
         )
     )
     await db.commit()
-    return {"ok": True, "username": user.username, "account_id": str(acc.id)}
+    return {"ok": True, "username": user.username}
 
 
 @router.post("/login")
@@ -175,10 +166,6 @@ async def logout(
 @router.get("/me")
 async def me(ctx: AuthContext = Depends(require_user), db: AsyncSession = Depends(get_db)):
     assert ctx.user
-    r = await db.execute(
-        select(CreditAccount).where(CreditAccount.user_id == ctx.user.id).limit(1)
-    )
-    acc = r.scalar_one_or_none()
     return {
         "user": {
             "id": str(ctx.user.id),
@@ -186,13 +173,6 @@ async def me(ctx: AuthContext = Depends(require_user), db: AsyncSession = Depend
             "display_name": ctx.user.display_name,
             "role": ctx.user.role,
             "timezone": ctx.user.timezone,
-        },
-        "credits": {
-            "balance_microcredits": int(acc.balance_microcredits) if acc else 0,
-            "reserved_microcredits": int(acc.reserved_microcredits) if acc else 0,
-            "available_microcredits": (
-                int(acc.balance_microcredits) - int(acc.reserved_microcredits) if acc else 0
-            ),
         },
         "csrf_token": ctx.session.csrf_secret if ctx.session else None,
     }

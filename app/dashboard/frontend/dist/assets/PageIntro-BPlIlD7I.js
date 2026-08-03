@@ -1,0 +1,1 @@
+import{j as e}from"./react-vendor-BSLFpBNK.js";function n({title:r,actions:s}){return e.jsxs("header",{className:"page-intro",children:[e.jsx("div",{className:"page-intro-copy",children:e.jsx("h2",{children:r})}),s?e.jsx("div",{className:"page-actions",children:s}):null]})}export{n as P};

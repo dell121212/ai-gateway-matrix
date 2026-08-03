@@ -14,7 +14,7 @@ AI Gateway Matrix 桌面应用壳
   1. 授权闸（run.sh app 已 ensure；也可 --activation-file 仅显示激活页）
   2. 探测 http://127.0.0.1:4000/healthz
   3. 未就绪则后台调用 run.sh / ai-gateway-matrix start
-  4. 打开应用窗口加载控制台（?app=1 启用桌面样式）
+  4. 打开应用窗口加载 Appica 控制台（/console/?app=1）
   5. 外链用系统浏览器打开，内网地址留在应用内
 """
 
@@ -37,7 +37,9 @@ from urllib.parse import urlparse
 # app/ 为程序根；源码仓库根在其上一级（含 run.sh / jiyi.txt）
 CODE_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = CODE_DIR.parent if (CODE_DIR.parent / "run.sh").is_file() else CODE_DIR
-DEFAULT_URL = os.environ.get("AI_GATEWAY_UI_URL", "http://127.0.0.1:4000/").rstrip("/") + "/"
+DEFAULT_URL = os.environ.get(
+    "AI_GATEWAY_UI_URL", "http://127.0.0.1:4000/console/"
+).rstrip("/") + "/"
 HEALTH_URL = os.environ.get("AI_GATEWAY_HEALTH_URL", "http://127.0.0.1:4000/healthz")
 APP_TITLE = "AI Gateway Matrix"
 WINDOW_WIDTH = int(os.environ.get("AI_GATEWAY_WINDOW_WIDTH", "1280"))
@@ -52,14 +54,16 @@ def _icon_path() -> Optional[Path]:
     return None
 
 
-def _resolve_start_command() -> list[str]:
-    """返回启动后端的命令行。"""
+def _resolve_start_command(action: str = "start") -> list[str]:
+    """返回管理后端的命令行。"""
+    if action not in {"start", "restart", "stop"}:
+        raise ValueError("不支持的后端操作")
     wrapper = shutil.which("ai-gateway-matrix")
     if wrapper and Path(wrapper).is_file():
-        return [wrapper, "start"]
+        return [wrapper, action]
     for run_sh in (REPO_ROOT / "run.sh", CODE_DIR / "run.sh"):
         if run_sh.is_file():
-            return ["bash", str(run_sh), "start"]
+            return ["bash", str(run_sh), action]
     raise RuntimeError("找不到启动脚本：ai-gateway-matrix 或 run.sh")
 
 
@@ -115,6 +119,31 @@ def _is_internal(url: str) -> bool:
         return True
     host = (parsed.hostname or "").lower()
     return host in {"127.0.0.1", "localhost", "::1"}
+
+
+def _backend_action_from_url(url: str) -> Optional[str]:
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None
+    if parsed.scheme != "ai-gateway" or parsed.netloc != "backend":
+        return None
+    action = parsed.path.strip("/")
+    return action if action in {"start", "restart", "stop"} else None
+
+
+def _dispatch_backend_action(action: str) -> None:
+    try:
+        subprocess.run(
+            _resolve_start_command(action),
+            cwd=str(CODE_DIR),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            check=False,
+        )
+    except Exception:
+        pass
 
 
 LOADING_HTML = """<!DOCTYPE html>
@@ -244,6 +273,15 @@ def _run_webkit_gtk(url: str) -> bool:
             target = req.get_uri() or ""
         except Exception:
             return False
+        backend_action = _backend_action_from_url(target)
+        if backend_action:
+            threading.Thread(
+                target=_dispatch_backend_action,
+                args=(backend_action,),
+                daemon=True,
+            ).start()
+            decision.ignore()
+            return True
         if _is_internal(target):
             return False
         # 外链交给系统浏览器
@@ -327,7 +365,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument(
         "--url",
         default=None,
-        help="覆盖控制台 URL（默认 http://127.0.0.1:4000/?app=1）",
+        help="覆盖控制台 URL（默认 http://127.0.0.1:4000/console/?app=1）",
     )
     parser.add_argument(
         "--activation-file",

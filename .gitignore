@@ -41,6 +41,8 @@ __pycache__/
 *.py[cod]
 # 前端依赖（体积大，本地 npm install）
 node_modules/
+# 本地 UI 参考源码，不属于 AI Gateway Matrix 发布内容
+/app/appflowy_gateway/
 # 测试/静态检查缓存
 .pytest_cache/
 .ruff_cache/
@@ -79,4 +81,3 @@ wheels/
 
 # 用户设置/Key 一键记忆文件（含密钥，禁止提交）
 jiyi.txt
-

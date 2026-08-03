@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from typing import Optional
-
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,6 +9,7 @@ from dashboard.app.core.security import has_permission
 from dashboard.app.db.models import AuditLog, PricingVersion
 from dashboard.app.db.session import get_db
 from dashboard.app.modules.deps import AuthContext, require_user
+from dashboard.app.services.pricing_sync import sync_litellm_catalog
 
 router = APIRouter(prefix="/api/v1/pricing", tags=["pricing"])
 
@@ -22,9 +21,6 @@ class PricingCreate(BaseModel):
     output_price: int = 0
     cached_input_price: int = 0
     reasoning_price: int = 0
-    billing_basis: str = "market_value"
-    credit_multiplier: str = "1.0"
-    minimum_microcredits: int = 1
     source: str = "manual"
 
 
@@ -41,9 +37,8 @@ async def list_pricing(ctx: AuthContext = Depends(require_user), db: AsyncSessio
                 "model_pattern": p.model_pattern,
                 "input_price": int(p.input_price),
                 "output_price": int(p.output_price),
-                "billing_basis": p.billing_basis,
-                "credit_multiplier": p.credit_multiplier,
-                "minimum_microcredits": int(p.minimum_microcredits),
+                "cached_input_price": int(p.cached_input_price),
+                "reasoning_price": int(p.reasoning_price),
                 "source": p.source,
                 "version": p.version,
                 "effective_from": p.effective_from.isoformat() if p.effective_from else None,
@@ -74,9 +69,9 @@ async def create_pricing(
         output_price=body.output_price,
         cached_input_price=body.cached_input_price,
         reasoning_price=body.reasoning_price,
-        billing_basis=body.billing_basis,
-        credit_multiplier=body.credit_multiplier,
-        minimum_microcredits=body.minimum_microcredits,
+        billing_basis="market_value",
+        credit_multiplier="1.0",
+        minimum_microcredits=0,
         source=body.source,
         version=1,
         created_by=ctx.user.username,
@@ -93,3 +88,18 @@ async def create_pricing(
     await db.commit()
     await db.refresh(row)
     return {"id": str(row.id)}
+
+
+@router.post("/sync-litellm")
+async def sync_pricing(ctx: AuthContext = Depends(require_user), db: AsyncSession = Depends(get_db)):
+    assert ctx.user
+    if not (
+        has_permission(ctx.user.role, "pricing:write")
+        or has_permission(ctx.user.role, "*")
+        or ctx.mode == "local"
+    ):
+        raise HTTPException(403, detail={"code": "forbidden", "message": "权限不足"})
+    result = await sync_litellm_catalog(db, actor=ctx.user.username)
+    db.add(AuditLog(actor_user_id=ctx.user.id, action="pricing_sync_litellm", resource_type="pricing", detail=result))
+    await db.commit()
+    return result

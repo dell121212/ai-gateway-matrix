@@ -44,7 +44,6 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from starlette.background import BackgroundTask
 from starlette.responses import StreamingResponse
 from websockets.asyncio.client import connect as websocket_connect
 from websockets.exceptions import ConnectionClosed
@@ -82,6 +81,74 @@ _proxy_client = httpx.AsyncClient(
     # socks:// 代理在模块导入阶段触发 Unknown scheme，并可能把内部流量外送。
     trust_env=False,
 )
+_observation_finalizers: set[asyncio.Task] = set()
+
+
+def _observation_done(task: asyncio.Task) -> None:
+    _observation_finalizers.discard(task)
+    if task.cancelled():
+        return
+    try:
+        error = task.exception()
+    except asyncio.CancelledError:
+        return
+    if error:
+        logger.warning("observation finalize failed: %s", error)
+
+
+async def _persist_response_observation(
+    context: dict,
+    raw: bytes,
+    *,
+    is_sse: bool,
+    response_status: int,
+) -> None:
+    import json
+
+    from dashboard.app.db.session import get_session_factory
+    from dashboard.app.modules.proxy import observation_proxy
+    from dashboard.app.services.observability import TokenUsage
+    from dashboard.app.services.stream_parser import StreamAccumulator, parse_sse_buffer
+
+    usage = TokenUsage()
+    model = ""
+    service_tier = ""
+    if is_sse:
+        accumulator = context.get("_stream_acc") or StreamAccumulator()
+        if not context.get("_stream_acc"):
+            parse_sse_buffer(raw.decode("utf-8", errors="ignore"), accumulator)
+        usage = TokenUsage(
+            prompt_tokens=accumulator.prompt_tokens or int(context.get("input_token_estimate") or 0),
+            completion_tokens=accumulator.completion_tokens or accumulator.estimated_completion_tokens(),
+            cached_tokens=accumulator.cached_tokens,
+            cache_creation_tokens=accumulator.cache_creation_tokens,
+            reasoning_tokens=accumulator.reasoning_tokens,
+        )
+        model = accumulator.model or ""
+        service_tier = accumulator.service_tier or ""
+    else:
+        try:
+            data = json.loads(raw.decode("utf-8") or "{}")
+        except (UnicodeDecodeError, ValueError):
+            data = {}
+        if isinstance(data, dict):
+            usage = observation_proxy.usage_from_response_json(data)
+            model = str(data.get("model") or "")
+            service_tier = str(data.get("service_tier") or "")
+    success = 200 <= response_status < 300
+    factory = get_session_factory()
+    async with factory() as session:
+        await observation_proxy.finalize_chat_observation(
+            session,
+            context,
+            usage=usage,
+            success=success,
+            response_status=response_status,
+            model=model,
+            ttft_ms=context.get("_ttft_ms"),
+            service_tier=service_tier,
+            error_class=None if success else f"http_{response_status}",
+        )
 
 
 @asynccontextmanager
@@ -94,6 +161,8 @@ async def lifespan(_app: FastAPI):
     except Exception as exc:  # pragma: no cover
         logger.warning("professional bootstrap deferred: %s", exc)
     yield
+    if _observation_finalizers:
+        await asyncio.gather(*tuple(_observation_finalizers), return_exceptions=True)
     await _proxy_client.aclose()
     try:
         from dashboard.app.db.session import dispose_engine
@@ -120,7 +189,7 @@ DASHBOARD_TOKEN = os.environ.get("DASHBOARD_TOKEN", "")
 if DASHBOARD_AUTH not in {"local", "token", "accounts"}:
     raise RuntimeError("DASHBOARD_AUTH 只能是 local、token 或 accounts")
 
-# Mount professional billing/auth/task APIs (modular package under dashboard/app)
+# Mount professional auth, task and observability APIs.
 try:
     from dashboard.app.main_mount import mount_professional_api
 
@@ -140,8 +209,6 @@ def _is_cross_site_browser_request(request: Request) -> bool:
         return origin.rstrip("/") not in {
             "http://127.0.0.1:4000",
             "http://localhost:4000",
-            "http://127.0.0.1:8080",
-            "http://localhost:8080",
         }
     expected_origin = f"{request.url.scheme}://{request.headers.get('host', '')}"
     return origin.rstrip("/") != expected_origin.rstrip("/")
@@ -161,6 +228,7 @@ def _is_dashboard_api_path(path: str) -> bool:
             "/api/gateway/probe",
             "/api/routing-control",
         }
+        or path.startswith("/api/routing-control/")
         or path.startswith("/api/channels/")
         or path.startswith("/api/client-keys/")
         or path.startswith("/api/companies/")
@@ -1355,6 +1423,125 @@ async def _probe_channel_connection(
     return result
 
 
+def _classifier_probe_channel(candidate: dict) -> dict:
+    """把分诊后端变成通用探测描述；刻意不携带任何密钥。"""
+    return {
+        "channel_id": "classifier",
+        "model": str(candidate.get("model") or ""),
+        "api_base": candidate.get("api_base"),
+        "env_var": str(candidate.get("cred_name") or ""),
+        "provider_name": str(candidate.get("label") or "智脑"),
+    }
+
+
+def _resolve_classifier_probe_backend() -> tuple[Optional[dict], dict]:
+    """从可随 jiyi 搬走的 .env 读取当前智脑，避免进程环境尚未热更新。"""
+    from gateway import llm_classifier
+
+    env_values = channel_loader.read_env_file()
+    explicit = (env_values.get("CLASSIFIER_API_KEY") or "").strip()
+    source = (env_values.get("CLASSIFIER_SOURCE_ENV") or "").strip().upper()
+    model_setting = (env_values.get("CLASSIFIER_MODEL") or "").strip()
+    base_setting = (env_values.get("CLASSIFIER_API_BASE") or "").strip() or None
+
+    if explicit and llm_classifier._is_usable_key(explicit):
+        model = llm_classifier._normalize_model_name(
+            model_setting or llm_classifier.DEFAULT_CLASSIFIER_MODEL,
+            base_setting,
+        )
+        return {
+            "model": model,
+            "api_key": explicit,
+            "api_base": base_setting,
+            "cred_name": "CLASSIFIER_API_KEY",
+            "label": f"dedicated/{model}",
+        }, env_values
+
+    if source and source not in {"AUTO", "NONE", "OFF"}:
+        key = (env_values.get(source) or "").strip()
+        defaults = llm_classifier._SOURCE_ENV_DEFAULTS.get(source, {})
+        if llm_classifier._is_usable_key(key):
+            model = llm_classifier._normalize_model_name(
+                model_setting or defaults.get("model") or llm_classifier.DEFAULT_CLASSIFIER_MODEL,
+                base_setting or defaults.get("api_base"),
+            )
+            return {
+                "model": model,
+                "api_key": key,
+                "api_base": base_setting or defaults.get("api_base"),
+                "cred_name": source,
+                "label": defaults.get("label") or f"source/{source}",
+            }, env_values
+
+    selected = llm_classifier.resolve_classifier_backend()
+    if selected:
+        selected = dict(selected)
+        fresh_key = (env_values.get(str(selected.get("cred_name") or "")) or "").strip()
+        if fresh_key:
+            selected["api_key"] = fresh_key
+        return selected, env_values
+
+    for candidate in (
+        list(llm_classifier._AUTO_ELITE_CLASSIFIERS)
+        + list(llm_classifier._AUTO_STRONG_CLASSIFIERS)
+    ):
+        env_name = str(candidate.get("env") or "")
+        key = (env_values.get(env_name) or "").strip()
+        if llm_classifier._is_usable_key(key):
+            return {
+                "model": candidate.get("model"),
+                "api_key": key,
+                "api_base": candidate.get("api_base"),
+                "cred_name": env_name,
+                "label": candidate.get("label") or env_name,
+            }, env_values
+    return None, env_values
+
+
+@app.post("/api/routing-control/probe")
+async def probe_routing_control():
+    """真实检查智脑连接；答检复用智脑时同步验证其上游。"""
+    candidate, env_values = _resolve_classifier_probe_backend()
+    if not candidate:
+        raise HTTPException(status_code=400, detail="智脑没有可用的已配置模型")
+
+    key = str(candidate.get("api_key") or "").strip()
+    channel = _classifier_probe_channel(candidate)
+    base = _resolve_openai_base(channel)
+    if base:
+        result = await _probe_chat(
+            base_url=_normalize_probe_base(base),
+            api_key=key,
+            model=_resolve_probe_model(channel),
+            label=channel["provider_name"],
+        )
+        matching = next(
+            (
+                item for item in channel_loader.load_channels()
+                if item.get("env_var") == channel.get("env_var")
+                and item.get("is_configured")
+            ),
+            None,
+        )
+        if matching:
+            await _record_probe_usage(matching, result)
+    else:
+        result = await _probe_channel_connection(channel, api_key=key)
+
+    verify_mode = (env_values.get("ANSWER_VERIFY_MODE") or "hybrid").strip().lower()
+    verify_labels = {"hybrid": "混合", "local": "本地", "dedicated": "专用智脑", "off": "关闭"}
+    upstream_message = str(result.get("message") or "")
+    if result.get("ok"):
+        latency = result.get("latency_ms")
+        latency_text = f" · {latency} ms" if latency is not None else ""
+        result["message"] = f"智脑连接正常{latency_text}；答检：{verify_labels.get(verify_mode, verify_mode)}"
+    else:
+        result["message"] = f"智脑连接失败：{upstream_message}"
+    result["connection_ok"] = bool(result.get("ok"))
+    result["answer_verify_mode"] = verify_mode
+    return result
+
+
 @app.post("/api/channels/{channel_id:path}/probe")
 async def probe_channel(channel_id: str):
     """检查已写入 .env 的上游 Key 是否真正能连通。"""
@@ -1631,17 +1818,9 @@ async def add_company_account(company_id: str):
 
 def _normalize_custom_api_base(value: str) -> str:
     """规范用户粘贴的 OpenAI 兼容地址，拒绝凭据和非 HTTP 协议。"""
-    raw = (value or "").strip().rstrip("/")
-    parsed = urlsplit(raw)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        raise ValueError("API 地址必须是完整的 http:// 或 https:// URL")
-    if parsed.username or parsed.password or parsed.fragment or parsed.query:
-        raise ValueError("API 地址不能包含账号、密码、查询参数或锚点")
-    path = parsed.path.rstrip("/")
-    for suffix in ("/chat/completions", "/models"):
-        if path.endswith(suffix):
-            path = path[: -len(suffix)]
-    return urlunsplit((parsed.scheme, parsed.netloc, path, "", "")).rstrip("/")
+    from dashboard.url_safety import validate_api_base
+
+    return validate_api_base(value)
 
 
 def _custom_model_pool(model: str, api_base: str) -> tuple[str, str, str]:
@@ -2002,22 +2181,32 @@ async def list_optimal_flags():
 async def summary():
     channels = channel_loader.load_channels()
 
-    total_tokens_today = 0
-    total_cost_today = 0.0
-    total_tokens_alltime = 0
-    total_cost_alltime = 0.0
-    has_any_cost_data = False
-
-    for c in channels:
-        usage = await usage_tracker.get_usage(c["usage_key"])
-        total_tokens_today += usage.get("day_tokens", 0)
-        total_tokens_alltime += usage.get("total_tokens", 0)
-        if usage.get("day_cost") is not None:
-            total_cost_today += usage["day_cost"]
-            has_any_cost_data = True
-        if usage.get("total_cost") is not None:
-            total_cost_alltime += usage["total_cost"]
-            has_any_cost_data = True
+    global_usage = await usage_tracker.get_global_usage()
+    if global_usage.get("available"):
+        total_tokens_today = int(global_usage.get("day_tokens") or 0)
+        total_tokens_alltime = int(global_usage.get("total_tokens") or 0)
+        total_cost_today = global_usage.get("day_cost")
+        total_cost_alltime = global_usage.get("total_cost")
+    else:
+        # Redis 查询整体失败时保留旧的逐渠道兜底，避免首页统计完全不可用。
+        total_tokens_today = 0
+        total_cost_today = 0.0
+        total_tokens_alltime = 0
+        total_cost_alltime = 0.0
+        has_any_cost_data = False
+        for c in channels:
+            usage = await usage_tracker.get_usage(c["usage_key"])
+            total_tokens_today += usage.get("day_tokens", 0)
+            total_tokens_alltime += usage.get("total_tokens", 0)
+            if usage.get("day_cost") is not None:
+                total_cost_today += usage["day_cost"]
+                has_any_cost_data = True
+            if usage.get("total_cost") is not None:
+                total_cost_alltime += usage["total_cost"]
+                has_any_cost_data = True
+        if not has_any_cost_data:
+            total_cost_today = None
+            total_cost_alltime = None
 
     return {
         "total": len(channels),
@@ -2033,8 +2222,8 @@ async def summary():
         # 金额是 None 还是 0：如果一次花费数据都没采集到（既没有 litellm 精确计价，
         # 也没有估算表命中），就是 None，不能显示成 "$0.00"——那看起来像是
         # "查过了确实不要钱"，跟"压根没数据"是两回事。
-        "total_cost_today": total_cost_today if has_any_cost_data else None,
-        "total_cost_alltime": total_cost_alltime if has_any_cost_data else None,
+        "total_cost_today": total_cost_today,
+        "total_cost_alltime": total_cost_alltime,
     }
 
 
@@ -2093,7 +2282,7 @@ async def proxy_litellm(request: Request, proxy_path: str):
     """把中文首页之外的全部路径透明转发给 LiteLLM。
 
     使用原始字节流返回，SSE/流式 completion 不会被 Dashboard 缓冲。
-    chat/completions 路径额外：积分预冻结、模式头、流式观测结算。
+    chat/completions 路径额外记录：Token、成本、延迟、路由和错误摘要。
     """
     import json as _json
 
@@ -2109,7 +2298,7 @@ async def proxy_litellm(request: Request, proxy_path: str):
         not in _HOP_BY_HOP_HEADERS | dynamic_hop_headers | {"host"}
     ]
 
-    billing_ctx: dict = {"billing_enabled": False}
+    observation_ctx: dict = {"observation_enabled": False}
     body_bytes: bytes | None = None
     path_norm = proxy_path.rstrip("/")
     is_chat = request.method == "POST" and (
@@ -2128,8 +2317,7 @@ async def proxy_litellm(request: Request, proxy_path: str):
             body_obj = {}
         try:
             from dashboard.app.db.session import get_session_factory
-            from dashboard.app.modules.proxy import billing_proxy
-            from dashboard.app.services import billing_engine as _be
+            from dashboard.app.modules.proxy import observation_proxy
             from dashboard.app.services.request_mode import InvalidModeError
             from sqlalchemy import select as _select
             from dashboard.app.db.models import User as _User
@@ -2143,7 +2331,7 @@ async def proxy_litellm(request: Request, proxy_path: str):
                 default_user = ur.scalar_one_or_none()
                 hdrs = {k.decode("latin-1"): v.decode("latin-1") for k, v in request.headers.raw}
                 auth = request.headers.get("authorization") or ""
-                billing_ctx = await billing_proxy.prepare_chat_billing(
+                observation_ctx = await observation_proxy.prepare_chat_observation(
                     session,
                     headers=hdrs,
                     body=body_obj,
@@ -2151,31 +2339,31 @@ async def proxy_litellm(request: Request, proxy_path: str):
                     default_user=default_user,
                 )
             # apply mode → stream policy before upstream
-            if billing_ctx.get("force_non_stream"):
+            if observation_ctx.get("force_non_stream"):
                 body_obj["stream"] = False
                 body_obj.pop("stream_options", None)
             # pass mode + request ids to LiteLLM / gateway hook
-            if billing_ctx.get("mode"):
+            if observation_ctx.get("mode"):
                 body_obj.setdefault("metadata", {})
                 if isinstance(body_obj["metadata"], dict):
-                    body_obj["metadata"]["privateapi_mode"] = billing_ctx["mode"]
+                    body_obj["metadata"]["privateapi_mode"] = observation_ctx["mode"]
                     body_obj["metadata"]["privateapi_request_id"] = str(
-                        billing_ctx.get("request_id") or ""
+                        observation_ctx.get("request_id") or ""
                     )
                     body_obj["metadata"]["privateapi_task_id"] = str(
-                        billing_ctx.get("task_id") or ""
+                        observation_ctx.get("task_id") or ""
                     )
             # Gateway dual-mode signal (also via header)
             extra = []
-            if billing_ctx.get("mode"):
+            if observation_ctx.get("mode"):
                 extra.append(
-                    (b"x-privateapi-mode", str(billing_ctx["mode"]).encode("latin-1"))
+                    (b"x-privateapi-mode", str(observation_ctx["mode"]).encode("latin-1"))
                 )
-            if billing_ctx.get("request_id"):
+            if observation_ctx.get("request_id"):
                 extra.append(
                     (
                         b"x-privateapi-request-id",
-                        str(billing_ctx["request_id"]).encode("latin-1"),
+                        str(observation_ctx["request_id"]).encode("latin-1"),
                     )
                 )
             request_headers = list(request_headers) + extra
@@ -2190,32 +2378,15 @@ async def proxy_litellm(request: Request, proxy_path: str):
                 (b"content-length", str(len(body_bytes)).encode("latin-1"))
             )
         except Exception as exc:
-            from dashboard.app.services import billing_engine as _be
             from dashboard.app.services.request_mode import InvalidModeError
 
-            if isinstance(exc, _be.InsufficientCredits):
-                return JSONResponse(
-                    status_code=402,
-                    content={
-                        "error": {
-                            "message": exc.message,
-                            "type": "insufficient_credits",
-                            "code": "insufficient_credits",
-                        }
-                    },
-                )
             if isinstance(exc, InvalidModeError):
                 return JSONResponse(
                     status_code=400,
                     content={"error": {"message": str(exc), "type": "invalid_mode"}},
                 )
-            if isinstance(exc, _be.BillingError) and get_settings_fail_closed():
-                return JSONResponse(
-                    status_code=exc.http_status,
-                    content={"error": {"message": exc.message, "code": exc.code}},
-                )
-            logger.warning("billing prepare soft-fail: %s", exc)
-            billing_ctx = {"billing_enabled": False}
+            logger.warning("observation prepare soft-fail: %s", exc)
+            observation_ctx = {"observation_enabled": False}
 
     has_body = (
         request.headers.get("content-length") not in {None, "0"}
@@ -2237,7 +2408,25 @@ async def proxy_litellm(request: Request, proxy_path: str):
             content=content,
         )
         upstream_response = await _proxy_client.send(upstream_request, stream=True)
-    except httpx.HTTPError:
+    except httpx.HTTPError as exc:
+        if observation_ctx.get("observation_enabled"):
+            try:
+                from dashboard.app.db.session import get_session_factory
+                from dashboard.app.modules.proxy import observation_proxy
+                from dashboard.app.services.observability import TokenUsage
+
+                factory = get_session_factory()
+                async with factory() as session:
+                    await observation_proxy.finalize_chat_observation(
+                        session,
+                        observation_ctx,
+                        usage=TokenUsage(prompt_tokens=int(observation_ctx.get("input_token_estimate") or 0)),
+                        success=False,
+                        response_status=502,
+                        error_class=type(exc).__name__,
+                    )
+            except Exception as finalize_exc:
+                logger.warning("failed to observe upstream connection error: %s", finalize_exc)
         return JSONResponse(
             status_code=502,
             content={"detail": "AI 网关暂时不可达，请稍后重试"},
@@ -2252,28 +2441,26 @@ async def proxy_litellm(request: Request, proxy_path: str):
             value = value[len(LITELLM_UPSTREAM_URL) :] or "/"
         response_headers.append((name.encode("latin-1"), value.encode("latin-1")))
 
-    # billing response headers
-    if billing_ctx.get("billing_enabled"):
+    # Correlation headers for the durable call log.
+    if observation_ctx.get("observation_enabled"):
         try:
-            from dashboard.app.modules.proxy.billing_proxy import response_headers_from_ctx
+            from dashboard.app.modules.proxy.observation_proxy import response_headers_from_context
 
-            for hk, hv in response_headers_from_ctx(billing_ctx).items():
+            for hk, hv in response_headers_from_context(observation_ctx).items():
                 response_headers.append((hk.encode("latin-1"), hv.encode("latin-1")))
         except Exception:
             pass
 
-    async def _aiter_with_billing():
-        from dashboard.app.modules.proxy import billing_proxy
-        from dashboard.app.services.billing_math import TokenUsage
-        from dashboard.app.services.stream_parser import StreamAccumulator, parse_sse_buffer
+    async def _aiter_with_observation():
+        from dashboard.app.modules.proxy import observation_proxy
 
         ctype = (upstream_response.headers.get("content-type") or "").lower()
         is_sse = "text/event-stream" in ctype
         raw_buf = bytearray()
         try:
-            if is_sse and billing_ctx.get("billing_enabled"):
-                async for chunk in billing_proxy.observe_sse_and_estimate(
-                    upstream_response.aiter_raw(), ctx=billing_ctx
+            if is_sse and observation_ctx.get("observation_enabled"):
+                async for chunk in observation_proxy.observe_sse(
+                    upstream_response.aiter_raw(), context=observation_ctx
                 ):
                     raw_buf.extend(chunk)
                     yield chunk
@@ -2283,64 +2470,27 @@ async def proxy_litellm(request: Request, proxy_path: str):
                     yield chunk
         finally:
             await upstream_response.aclose()
-            if not billing_ctx.get("billing_enabled"):
+            if not observation_ctx.get("observation_enabled"):
                 return
-            try:
-                from dashboard.app.db.session import get_session_factory
-
-                usage = TokenUsage()
-                model = ""
-                success = 200 <= upstream_response.status_code < 300
-                if is_sse:
-                    acc = billing_ctx.get("_stream_acc") or StreamAccumulator()
-                    if not billing_ctx.get("_stream_acc"):
-                        parse_sse_buffer(raw_buf.decode("utf-8", errors="ignore"), acc)
-                    usage = TokenUsage(
-                        prompt_tokens=acc.prompt_tokens or int(billing_ctx.get("input_token_estimate") or 0),
-                        completion_tokens=acc.completion_tokens or acc.estimated_completion_tokens(),
-                        cached_tokens=acc.cached_tokens,
-                        reasoning_tokens=acc.reasoning_tokens,
-                    )
-                    model = acc.model or ""
-                else:
-                    try:
-                        data = _json.loads(raw_buf.decode("utf-8") or "{}")
-                        if isinstance(data, dict):
-                            usage = billing_proxy.usage_from_response_json(data)
-                            model = str(data.get("model") or "")
-                    except Exception:
-                        pass
-                factory = get_session_factory()
-                async with factory() as session:
-                    await billing_proxy.finalize_chat_billing(
-                        session,
-                        billing_ctx,
-                        usage=usage,
-                        success=success,
-                        response_status=upstream_response.status_code,
-                        model=model,
-                        error_class=None if success else f"http_{upstream_response.status_code}",
-                    )
-            except Exception as exc:
-                logger.warning("billing finalize failed: %s", exc)
+            task = asyncio.create_task(
+                _persist_response_observation(
+                    observation_ctx,
+                    bytes(raw_buf),
+                    is_sse=is_sse,
+                    response_status=upstream_response.status_code,
+                )
+            )
+            _observation_finalizers.add(task)
+            task.add_done_callback(_observation_done)
 
     response = StreamingResponse(
-        _aiter_with_billing(),
+        _aiter_with_observation(),
         status_code=upstream_response.status_code,
     )
     # Starlette's public ``headers=`` argument is a mapping and therefore cannot
     # represent repeated Set-Cookie/WWW-Authenticate fields.  ASGI raw_headers can.
     response.raw_headers = response_headers
     return response
-
-
-def get_settings_fail_closed() -> bool:
-    try:
-        from dashboard.app.core.config import get_settings
-
-        return get_settings().billing_fail_mode == "closed"
-    except Exception:
-        return False
 
 
 _WEBSOCKET_HANDSHAKE_HEADERS = {

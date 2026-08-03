@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -195,11 +195,15 @@ async def get_request(
                 "completion_tokens": a.completion_tokens,
                 "actual_cost_microusd": int(a.actual_cost_microusd),
                 "market_value_microusd": int(a.market_value_microusd),
-                "charged_microcredits": int(a.charged_microcredits),
+                "cost_microusd": int(a.actual_cost_microusd),
+                "cached_tokens": int(a.cached_tokens),
+                "reasoning_tokens": int(a.reasoning_tokens),
+                "ttft_ms": a.ttft_ms,
+                "latency_ms": a.latency_ms,
+                "service_tier": a.service_tier,
                 "is_final_success": a.is_final_success,
                 "is_platform_loss": a.is_platform_loss,
                 "quality_failure_reason": a.quality_failure_reason,
-                "billing_mode": a.billing_mode,
                 "error_class": a.error_class,
             }
             for a in attempts
@@ -215,8 +219,10 @@ def _task_json(t: Task) -> dict:
         "status": t.status,
         "client_name": t.client_name,
         "grouping_source": t.grouping_source,
-        "estimated_microcredits": int(t.estimated_microcredits or 0),
-        "settled_microcredits": int(t.settled_microcredits or 0),
+        "prompt_tokens": int(t.prompt_tokens or 0),
+        "completion_tokens": int(t.completion_tokens or 0),
+        "total_tokens": int(t.prompt_tokens or 0) + int(t.completion_tokens or 0),
+        "cost_microusd": int(t.cost_microusd or 0),
         "request_count": int(t.request_count or 0),
         "started_at": t.started_at.isoformat() if t.started_at else None,
         "finished_at": t.finished_at.isoformat() if t.finished_at else None,
@@ -233,14 +239,20 @@ def _req_json(r: ClientRequest) -> dict:
         "mode": r.mode,
         "stream": r.stream,
         "status": r.status,
-        "estimated_microcredits": int(r.estimated_microcredits or 0),
-        "settled_microcredits": int(r.settled_microcredits or 0),
-        "reserved_microcredits": int(r.reserved_microcredits or 0),
+        "provider": r.provider,
+        "actual_model": r.actual_model,
+        "cost_microusd": int(r.cost_microusd or 0),
         "final_prompt_tokens": r.final_prompt_tokens,
         "final_completion_tokens": r.final_completion_tokens,
+        "cached_tokens": r.cached_tokens,
+        "reasoning_tokens": r.reasoning_tokens,
+        "latency_ms": r.latency_ms,
+        "ttft_ms": r.ttft_ms,
+        "route_strategy": r.route_strategy,
+        "route_reason": r.route_reason,
+        "request_summary": r.request_summary,
         "settlement_source": r.settlement_source,
         "error_class": r.error_class,
         "started_at": r.started_at.isoformat() if r.started_at else None,
         "finished_at": r.finished_at.isoformat() if r.finished_at else None,
-        "latency_ms": r.latency_ms,
     }

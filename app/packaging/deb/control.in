@@ -2,15 +2,17 @@ Package: ai-gateway-matrix
 Version: @VERSION@
 Section: net
 Priority: optional
-Architecture: all
+Architecture: amd64
 Maintainer: AI Gateway Matrix maintainers <noreply@localhost>
-Depends: bash (>= 4.0), coreutils, docker.io | docker-ce, openssl | python3, python3-gi, gir1.2-gtk-3.0, gir1.2-webkit2-4.1 | gir1.2-webkit2-4.0, jq
-Recommends: docker-compose-v2 | docker-compose-plugin
+Depends: bash (>= 4.0), coreutils, docker.io | docker-ce, openssl | python3, jq, libgtk-3-0t64 | libgtk-3-0, libkeybinder-3.0-0, libnotify4
+Recommends: docker-compose-v2 | docker-compose-plugin, fonts-noto-cjk
 Suggests: python3-yaml
 Homepage: https://github.com/dell121212/Private-API
-Description: Multi-provider OpenAI-compatible AI gateway (LiteLLM)
- Open-source AI Gateway Matrix: unified OpenAI-compatible endpoint for multiple
- LLM providers, Chinese dashboard, routing pools, Docker one-shot deploy.
+Description: Appica desktop console for AI Gateway Matrix
+ React and Appica based desktop control center with a native WebView shell, unified
+ OpenAI-compatible endpoint, total Token history, API keys, channels, professional
+ records, backend controls and jiyi persistence. An AppFlowy-based Flutter shell is
+ retained as a compatibility interface.
  .
  Code: /usr/share/ai-gateway-matrix
  User data: ${XDG_CONFIG_HOME:-$HOME/.config}/ai-gateway-matrix

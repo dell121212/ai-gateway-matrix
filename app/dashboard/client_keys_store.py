@@ -26,18 +26,19 @@ def _now() -> str:
 
 def _load() -> dict[str, Any]:
     if not STORE_PATH.exists():
-        return {"version": 1, "keys": []}
+        return {"version": 3, "portable_secrets": True, "keys": []}
     try:
         data = json.loads(STORE_PATH.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
-            return {"version": 1, "keys": []}
-        data.setdefault("version", 1)
+            return {"version": 3, "portable_secrets": True, "keys": []}
+        data.setdefault("version", 3)
+        data.setdefault("portable_secrets", True)
         data.setdefault("keys", [])
         if not isinstance(data["keys"], list):
             data["keys"] = []
         return data
     except (OSError, ValueError):
-        return {"version": 1, "keys": []}
+        return {"version": 3, "portable_secrets": True, "keys": []}
 
 
 def _save(data: dict[str, Any]) -> None:
@@ -84,6 +85,8 @@ def remember_key(
     keys = [k for k in data["keys"] if k.get("key") != full_key and k.get("id") != entry["id"]]
     keys.insert(0, entry)
     data["keys"] = keys[:100]
+    data["version"] = 3
+    data["portable_secrets"] = True
     _save(data)
     return entry
 

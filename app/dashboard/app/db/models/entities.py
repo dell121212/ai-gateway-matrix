@@ -1,4 +1,4 @@
-"""ORM models for private_api schema — professional ledger + auth."""
+"""ORM models for authentication and durable request observability."""
 
 from __future__ import annotations
 
@@ -43,6 +43,8 @@ class User(Base):
     last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     sessions: Mapped[list["Session"]] = relationship(back_populates="user")
+    # Legacy credit accounts remain mapped so V1 snapshots can be restored. New
+    # request paths never create or consult them.
     credit_accounts: Mapped[list["CreditAccount"]] = relationship(back_populates="user")
     api_keys: Mapped[list["ApiKey"]] = relationship(back_populates="user")
 
@@ -83,8 +85,8 @@ class ApiKey(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("private_api.users.id"), nullable=False, index=True)
-    credit_account_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("private_api.credit_accounts.id"), nullable=False
+    credit_account_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("private_api.credit_accounts.id"), nullable=True
     )
     litellm_token_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     key_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
@@ -146,6 +148,9 @@ class Task(Base):
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     estimated_microcredits: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     settled_microcredits: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    prompt_tokens: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    completion_tokens: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    cost_microusd: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     request_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     metadata_json: Mapped[Optional[Any]] = mapped_column("metadata", JSONB, nullable=True)
 
@@ -169,9 +174,21 @@ class ClientRequest(Base):
     final_completion_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     cached_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     reasoning_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    cache_creation_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     estimated_microcredits: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     settled_microcredits: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     reserved_microcredits: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    cost_microusd: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    provider: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    actual_model: Mapped[str] = mapped_column(String(128), default="", nullable=False)
+    service_tier: Mapped[str] = mapped_column(String(32), default="", nullable=False)
+    ttft_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    route_strategy: Mapped[str] = mapped_column(String(32), default="brain-tier", nullable=False)
+    route_reason: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    request_summary: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
+    detail_artifact_path: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    detail_artifact_size: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    detail_artifact_sha256: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     response_status_code: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     error_class: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     settlement_source: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
@@ -204,6 +221,7 @@ class LlmAttempt(Base):
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     cached_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     reasoning_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    cache_creation_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     actual_cost_microusd: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     market_value_microusd: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     charged_microcredits: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
@@ -213,6 +231,8 @@ class LlmAttempt(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     latency_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    ttft_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    service_tier: Mapped[str] = mapped_column(String(32), default="", nullable=False)
     error_class: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     quality_failure_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     litellm_call_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
@@ -245,6 +265,49 @@ class PricingVersion(Base):
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     created_by: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class UsageAggregate(Base):
+    """Hourly/daily materialized usage statistics; call rows remain the truth."""
+
+    __tablename__ = "usage_aggregates"
+    __table_args__ = (
+        UniqueConstraint("bucket", "bucket_start", "provider", "model", name="uq_usage_aggregate_slice"),
+        Index("ix_usage_aggregates_bucket_start", "bucket", "bucket_start"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    bucket: Mapped[str] = mapped_column(String(16), nullable=False)
+    bucket_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    provider: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    model: Mapped[str] = mapped_column(String(128), default="", nullable=False)
+    requests: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    successes: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    failures: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    prompt_tokens: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    completion_tokens: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    cached_tokens: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    reasoning_tokens: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    cost_microusd: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    latency_ms_sum: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    ttft_ms_sum: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
+class QuotaSnapshot(Base):
+    __tablename__ = "quota_snapshots"
+    __table_args__ = (Index("ix_quota_snapshots_provider_time", "provider", "observed_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    connection_id: Mapped[str] = mapped_column(String(128), default="", nullable=False)
+    window: Mapped[str] = mapped_column(String(32), default="unknown", nullable=False)
+    remaining_percent: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    exhausted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    reset_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    window_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    raw_data: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, index=True)
 
 
 class AuditLog(Base):

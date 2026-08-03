@@ -1,4 +1,4 @@
-"""Create tasks/requests, reserve credits, settle after upstream."""
+"""Create and finalize durable call observations without a credit ledger."""
 
 from __future__ import annotations
 
@@ -7,29 +7,23 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dashboard.app.core.config import get_settings
 from dashboard.app.core.ids import hash_token, optional_uuid
-from dashboard.app.core.logging import setup_logging
-from dashboard.app.db.models import ApiKey, ClientRequest, CreditAccount, LlmAttempt, Task, User
-from dashboard.app.services import billing_engine, billing_math, events
-from dashboard.app.services.billing_math import PriceQuote, TokenUsage
-
-logger = setup_logging("private_api.lifecycle")
+from dashboard.app.db.models import ApiKey, ClientRequest, LlmAttempt, Task, UsageAggregate, User
+from dashboard.app.services import events
+from dashboard.app.services.observability import TokenUsage
 
 
 async def resolve_api_key(session: AsyncSession, bearer: str) -> Optional[ApiKey]:
-    if not bearer:
-        return None
-    raw = bearer.removeprefix("Bearer ").strip()
+    raw = bearer.removeprefix("Bearer ").strip() if bearer else ""
     if not raw:
         return None
-    kh = hash_token(raw)
-    r = await session.execute(
-        select(ApiKey).where(ApiKey.key_hash == kh, ApiKey.status == "active")
+    result = await session.execute(
+        select(ApiKey).where(ApiKey.key_hash == hash_token(raw), ApiKey.status == "active")
     )
-    return r.scalar_one_or_none()
+    return result.scalar_one_or_none()
 
 
 async def get_or_create_task(
@@ -43,35 +37,31 @@ async def get_or_create_task(
     workspace_id: Optional[str],
 ) -> Task:
     if external_task_id:
-        eu = optional_uuid(external_task_id)
-        if eu:
-            r = await session.execute(select(Task).where(Task.id == eu))
-            t = r.scalar_one_or_none()
-            if t:
-                return t
-        r = await session.execute(
-            select(Task).where(
-                Task.external_task_id == external_task_id,
-                Task.user_id == user_id,
-                Task.status == "running",
+        parsed = optional_uuid(external_task_id)
+        if parsed:
+            existing = (await session.execute(select(Task).where(Task.id == parsed))).scalar_one_or_none()
+            if existing:
+                return existing
+        existing = (
+            await session.execute(
+                select(Task).where(
+                    Task.external_task_id == external_task_id,
+                    Task.user_id == user_id,
+                    Task.status == "running",
+                )
             )
-        )
-        t = r.scalar_one_or_none()
-        if t:
-            return t
-
-    grouping = "explicit" if external_task_id else "inferred"
+        ).scalar_one_or_none()
+        if existing:
+            return existing
     task = Task(
-        id=uuid.uuid4(),
         user_id=user_id,
         api_key_id=api_key_id,
         external_task_id=external_task_id,
         session_id=session_id,
         client_name=client_name or "",
         workspace_hash=hash_token(workspace_id)[:16] if workspace_id else None,
-        title="",
         status="running",
-        grouping_source=grouping,
+        grouping_source="explicit" if external_task_id else "inferred",
     )
     session.add(task)
     await session.flush()
@@ -82,73 +72,37 @@ async def begin_request(
     session: AsyncSession,
     *,
     user: User,
-    account: CreditAccount,
     api_key: Optional[ApiKey],
     task: Task,
     requested_model: str,
     mode: str,
     stream: bool,
     input_token_estimate: int,
-) -> tuple[ClientRequest, int, billing_engine.AccountSnapshot]:
-    settings = get_settings()
-    reserve = billing_math.estimate_reserve_microcredits(
-        input_tokens=input_token_estimate,
-        expected_output_tokens=1024,
-        credits_per_usd=settings.credits_per_usd,
-        service_multiplier=settings.service_multiplier,
-    )
-    if api_key and api_key.request_budget_microcredits:
-        reserve = min(reserve, int(api_key.request_budget_microcredits))
-
-    req = ClientRequest(
-        id=uuid.uuid4(),
+    request_summary: Optional[dict[str, Any]] = None,
+    route_strategy: str = "brain-tier",
+) -> ClientRequest:
+    row = ClientRequest(
         task_id=task.id,
         user_id=user.id,
         api_key_id=api_key.id if api_key else None,
         requested_model=requested_model,
         mode=mode,
         stream=stream,
-        status="reserved",
-        input_token_estimate=input_token_estimate,
-        estimated_microcredits=reserve,
-        reserved_microcredits=reserve,
-        retry_policy=settings.billing_retry_policy,
+        status="running",
+        input_token_estimate=max(0, input_token_estimate),
+        request_summary=request_summary,
+        route_strategy=route_strategy,
     )
-    session.add(req)
-    await session.flush()
-
-    try:
-        _entry, snap = await billing_engine.reserve_credits(
-            session,
-            account.id,
-            reserve,
-            idempotency_key=f"reserve:{req.id}",
-            task_id=task.id,
-            client_request_id=req.id,
-        )
-    except billing_engine.InsufficientCredits:
-        req.status = "rejected_insufficient"
-        await session.flush()
-        raise
-
+    session.add(row)
     task.request_count = int(task.request_count or 0) + 1
-    task.estimated_microcredits = int(task.estimated_microcredits or 0) + reserve
     await session.flush()
-
     await events.publish_event(
-        event="credits.reserved",
+        event="usage.started",
         task_id=str(task.id),
         user_id=str(user.id),
-        payload={
-            "request_id": str(req.id),
-            "reserved_microcredits": reserve,
-            "task_estimated_microcredits": task.estimated_microcredits,
-            "available_balance_microcredits": snap.available_microcredits,
-            "mode": mode,
-            "model": requested_model,
-        },
+        payload={"request_id": str(row.id), "model": requested_model, "mode": mode},
     )
-    return req, reserve, snap
+    return row
 
 
 async def record_attempt(
@@ -160,25 +114,21 @@ async def record_attempt(
     actual_model: str,
     status: str,
     usage: TokenUsage,
-    actual_cost_microusd: int,
-    market_value_microusd: int,
-    charged_microcredits: int,
+    cost_microusd: int,
+    latency_ms: Optional[int] = None,
+    ttft_ms: Optional[int] = None,
+    service_tier: str = "",
     is_final_success: bool = False,
-    is_platform_loss: bool = False,
-    quality_failure_reason: Optional[str] = None,
-    litellm_call_id: Optional[str] = None,
-    billing_mode: str = "unknown",
-    credit_basis: str = "market_value",
     error_class: Optional[str] = None,
+    litellm_call_id: Optional[str] = None,
 ) -> LlmAttempt:
     idem = f"attempt:{req.id}:{attempt_number}:{litellm_call_id or status}"
-    existing = await session.execute(
-        select(LlmAttempt).where(LlmAttempt.idempotency_key == idem)
-    )
-    row = existing.scalar_one_or_none()
-    if row:
-        return row
-    att = LlmAttempt(
+    existing = (
+        await session.execute(select(LlmAttempt).where(LlmAttempt.idempotency_key == idem))
+    ).scalar_one_or_none()
+    if existing:
+        return existing
+    row = LlmAttempt(
         client_request_id=req.id,
         attempt_number=attempt_number,
         provider=provider,
@@ -187,146 +137,131 @@ async def record_attempt(
         prompt_tokens=usage.prompt_tokens,
         completion_tokens=usage.completion_tokens,
         cached_tokens=usage.cached_tokens,
+        cache_creation_tokens=usage.cache_creation_tokens,
         reasoning_tokens=usage.reasoning_tokens,
-        actual_cost_microusd=actual_cost_microusd,
-        market_value_microusd=market_value_microusd,
-        charged_microcredits=charged_microcredits,
-        cost_source="usage" if usage.prompt_tokens or usage.completion_tokens else "estimate",
+        actual_cost_microusd=max(0, cost_microusd),
+        market_value_microusd=max(0, cost_microusd),
+        charged_microcredits=0,
+        cost_source="usage" if usage.total_tokens else "estimate",
         is_final_success=is_final_success,
-        is_platform_loss=is_platform_loss,
-        quality_failure_reason=quality_failure_reason,
+        latency_ms=latency_ms,
+        ttft_ms=ttft_ms,
+        service_tier=service_tier,
+        error_class=error_class,
         litellm_call_id=litellm_call_id,
         idempotency_key=idem,
-        billing_mode=billing_mode,
-        credit_basis=credit_basis,
-        error_class=error_class,
+        billing_mode="observation",
+        credit_basis="none",
         finished_at=datetime.now(timezone.utc),
     )
-    session.add(att)
+    session.add(row)
     await session.flush()
-    return att
+    return row
 
 
-async def settle_request(
+async def finalize_request(
     session: AsyncSession,
     *,
-    account: CreditAccount,
     task: Task,
     req: ClientRequest,
     usage: TokenUsage,
-    actual_cost_microusd: int = 0,
-    price: Optional[PriceQuote] = None,
-    settlement_source: str = "litellm_usage",
-    success: bool = True,
-    response_status: int = 200,
+    cost_microusd: int,
+    success: bool,
+    response_status: int,
+    provider: str = "",
+    actual_model: str = "",
     error_class: Optional[str] = None,
+    ttft_ms: Optional[int] = None,
+    service_tier: str = "",
 ) -> dict[str, Any]:
-    settings = get_settings()
-    price = price or PriceQuote()
-    market = billing_math.market_value_microusd(usage, price)
-    breakdown = billing_math.compute_credits(
-        actual_cost_microusd=actual_cost_microusd,
-        market_value_microusd=market,
-        credits_per_usd=settings.credits_per_usd,
-        service_multiplier=settings.service_multiplier,
-        price=price,
-    )
-    charge = breakdown.credits_microcredits if success else 0
-    reserved = int(req.reserved_microcredits or 0)
-
-    _entry, snap = await billing_engine.settle_from_reservation(
-        session,
-        account.id,
-        reserved_amount=reserved,
-        settle_amount=charge,
-        idempotency_key=f"settle:{req.id}",
-        task_id=task.id,
-        client_request_id=req.id,
-        reason="request_settle",
-        metadata={
-            "settlement_source": settlement_source,
-            "actual_cost_microusd": breakdown.actual_cost_microusd,
-            "market_value_microusd": breakdown.market_value_microusd,
-            "basis": breakdown.billing_basis,
-        },
-    )
-
+    finished = datetime.now(timezone.utc)
     req.final_prompt_tokens = usage.prompt_tokens
     req.final_completion_tokens = usage.completion_tokens
     req.cached_tokens = usage.cached_tokens
+    req.cache_creation_tokens = usage.cache_creation_tokens
     req.reasoning_tokens = usage.reasoning_tokens
-    req.settled_microcredits = charge
-    req.estimated_microcredits = max(int(req.estimated_microcredits or 0), charge)
-    req.status = "settled" if success else "failed"
-    req.settlement_source = settlement_source
+    req.cost_microusd = max(0, cost_microusd)
+    req.provider = provider
+    req.actual_model = actual_model or req.requested_model
+    if not req.provider and "/" in req.actual_model:
+        req.provider = req.actual_model.split("/", 1)[0]
+    if not req.route_reason:
+        req.route_reason = f"{req.provider or 'upstream'} 返回 {req.actual_model}"
+    req.service_tier = service_tier
+    req.ttft_ms = ttft_ms
+    req.status = "success" if success else "failed"
     req.response_status_code = response_status
     req.error_class = error_class
-    req.finished_at = datetime.now(timezone.utc)
-    if req.started_at:
-        req.latency_ms = int((req.finished_at - req.started_at).total_seconds() * 1000)
+    req.finished_at = finished
+    req.latency_ms = int((finished - req.started_at).total_seconds() * 1000) if req.started_at else None
+    req.settlement_source = "usage"
+    req.estimated_microcredits = req.settled_microcredits = req.reserved_microcredits = 0
 
-    task.settled_microcredits = int(task.settled_microcredits or 0) + charge
-    # reduce estimated by reserved for this request, add settled (approx)
-    task.estimated_microcredits = max(
-        int(task.settled_microcredits or 0),
-        int(task.estimated_microcredits or 0) - reserved + charge,
-    )
-    await session.flush()
-
-    await events.publish_event(
-        event="credits.settled",
-        task_id=str(task.id),
-        user_id=str(req.user_id),
-        payload={
-            "request_id": str(req.id),
-            "request_settled_microcredits": charge,
-            "task_settled_microcredits": task.settled_microcredits,
-            "balance_microcredits": snap.balance_microcredits,
-            "reserved_microcredits": snap.reserved_microcredits,
-            "settled": True,
-            "cost_source": settlement_source,
-            "success": success,
-        },
-    )
-    return {
-        "settled_microcredits": charge,
-        "snapshot": snap,
-        "breakdown": breakdown,
-    }
-
-
-async def fail_and_release(
-    session: AsyncSession,
-    *,
-    account: CreditAccount,
-    task: Task,
-    req: ClientRequest,
-    error_class: str,
-    response_status: int = 500,
-) -> None:
-    reserved = int(req.reserved_microcredits or 0)
-    await billing_engine.release_reservation(
+    task.prompt_tokens = int(task.prompt_tokens or 0) + usage.prompt_tokens
+    task.completion_tokens = int(task.completion_tokens or 0) + usage.completion_tokens
+    task.cost_microusd = int(task.cost_microusd or 0) + req.cost_microusd
+    await _update_aggregates(session, req=req, usage=usage, success=success)
+    await record_attempt(
         session,
-        account.id,
-        reserved,
-        idempotency_key=f"release:{req.id}",
-        task_id=task.id,
-        client_request_id=req.id,
-        reason=f"fail:{error_class}",
+        req,
+        attempt_number=1,
+        provider=provider,
+        actual_model=req.actual_model,
+        status=req.status,
+        usage=usage,
+        cost_microusd=req.cost_microusd,
+        latency_ms=req.latency_ms,
+        ttft_ms=ttft_ms,
+        service_tier=service_tier,
+        is_final_success=success,
+        error_class=error_class,
     )
-    req.status = "failed"
-    req.error_class = error_class
-    req.response_status_code = response_status
-    req.finished_at = datetime.now(timezone.utc)
-    req.settled_microcredits = 0
     await session.flush()
     await events.publish_event(
-        event="credits.released",
+        event="usage.observed",
         task_id=str(task.id),
         user_id=str(req.user_id),
         payload={
             "request_id": str(req.id),
-            "released_microcredits": reserved,
-            "error_class": error_class,
+            "status": req.status,
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+            "cost_microusd": req.cost_microusd,
+            "latency_ms": req.latency_ms,
         },
     )
+    return {"request_id": str(req.id), "task_id": str(task.id), "cost_microusd": req.cost_microusd}
+
+
+async def _update_aggregates(
+    session: AsyncSession, *, req: ClientRequest, usage: TokenUsage, success: bool
+) -> None:
+    moment = req.finished_at or datetime.now(timezone.utc)
+    for bucket, start in (
+        ("hour", moment.replace(minute=0, second=0, microsecond=0)),
+        ("day", moment.replace(hour=0, minute=0, second=0, microsecond=0)),
+    ):
+        values = {
+            "bucket": bucket, "bucket_start": start, "provider": req.provider,
+            "model": req.actual_model, "requests": 1,
+            "successes": int(success), "failures": int(not success),
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+            "cached_tokens": usage.cached_tokens,
+            "reasoning_tokens": usage.reasoning_tokens,
+            "cost_microusd": req.cost_microusd,
+            "latency_ms_sum": int(req.latency_ms or 0),
+            "ttft_ms_sum": int(req.ttft_ms or 0),
+        }
+        statement = insert(UsageAggregate).values(**values)
+        excluded = statement.excluded
+        counters = (
+            "requests", "successes", "failures", "prompt_tokens",
+            "completion_tokens", "cached_tokens", "reasoning_tokens",
+            "cost_microusd", "latency_ms_sum", "ttft_ms_sum",
+        )
+        statement = statement.on_conflict_do_update(
+            constraint="uq_usage_aggregate_slice",
+            set_={field: getattr(UsageAggregate, field) + getattr(excluded, field) for field in counters},
+        )
+        await session.execute(statement)

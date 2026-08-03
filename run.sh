@@ -18,7 +18,7 @@ fi
 
 STARTUP_TIMEOUT="${STARTUP_TIMEOUT:-180}"
 COMPOSE_STARTED=false
-COMMAND="start"
+COMMAND="app"
 
 if [[ -t 1 ]]; then
     GREEN='\033[0;32m'
@@ -72,15 +72,17 @@ usage() {
 用法: ${prog} [命令]
 
 命令:
-  app       打开桌面应用窗口（推荐；自动 start 后端）
+  app       打开 Appica 桌面控制台（推荐；自动 start 后端）
+  flutter   打开 Flutter 兼容界面
   start     仅启动网关服务（无窗口；首次会初始化用户数据目录）
   stop      停止全部容器
   restart   重启服务
   status    查看容器状态
+  doctor    只读检查配置、Provider、权限与在线状态
   logs      跟踪日志（可附 docker compose logs 参数）
   backup    一键打包用户数据为 .tgz
   restore   从 .tgz 恢复用户数据
-  jiyi      保存/恢复记忆文件 jiyi.txt（设置+Key 单文件）
+  jiyi      管理自动同步的 jiyi.txt（设置+Key 单文件迁移凭证）
   license   （可选）离线授权实验命令；开源版启动不校验
   home      打印用户数据目录
   version   打印版本
@@ -92,6 +94,7 @@ usage() {
 
 记忆文件:
   ${prog} jiyi save | load | path | list
+  start 后会自动生成并持续同步；正常使用无需手动 save。
 
 升级 deb 不覆盖用户数据目录。
 EOF
@@ -149,7 +152,7 @@ seed_user_data() {
     if [[ ! -f "${DATA_DIR}/PORTABLE.txt" ]]; then
         cat > "${DATA_DIR}/PORTABLE.txt" <<'PORTABLE'
 AI Gateway Matrix — 用户数据目录
-设置与 Key 也会汇总到仓库根 jiyi.txt（./run.sh jiyi save）。
+设置与 Key 会自动同步到仓库根 jiyi.txt；迁移后用 ./run.sh jiyi load 恢复。
 PORTABLE
     fi
 }
@@ -157,6 +160,7 @@ PORTABLE
 setup_compose() {
     export AI_GATEWAY_CODE="$CODE_DIR"
     export AI_GATEWAY_HOME="$DATA_DIR"
+    export AI_GATEWAY_JIYI_PATH="$(resolve_jiyi_path)"
     export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-ai-gateway-matrix}"
     export HOST_UID="$(id -u)"
     export HOST_GID="$(id -g)"
@@ -240,21 +244,96 @@ cmd_stop() {
     info "已停止"
 }
 
-cmd_app() {
+flutter_bundle_path() {
+    if [[ "$SOURCE_LAYOUT" -eq 1 ]]; then
+        printf '%s\n' \
+            "${CODE_DIR}/appflowy_gateway/frontend/appflowy_flutter/build/linux/x64/release/bundle"
+    else
+        printf '%s\n' "${CODE_DIR}/flutter"
+    fi
+}
+
+check_flutter_runtime_dependencies() {
+    local flutter_bundle="$1"
+    local missing_libraries missing_list install_hint=""
+
+    command -v ldd >/dev/null 2>&1 || return 0
+    missing_libraries="$({
+        LD_LIBRARY_PATH="${flutter_bundle}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+            ldd "${flutter_bundle}/AppFlowy" 2>/dev/null || true
+    } | awk '$2 == "=>" && $3 == "not" && $4 == "found" { print $1 }')"
+    [[ -z "$missing_libraries" ]] && return 0
+
+    missing_list="${missing_libraries//$'\n'/, }"
+    if grep -qx 'libkeybinder-3.0.so.0' <<<"$missing_libraries"; then
+        install_hint=$'\nZorin/Ubuntu 安装命令：sudo apt-get install -y libkeybinder-3.0-0'
+    fi
+    die "Flutter 桌面应用缺少系统运行库：${missing_list}${install_hint}"
+}
+
+check_flutter_release_freshness() {
+    local flutter_bundle="$1"
+    local flutter_project release_library newer_source
+
+    [[ "$SOURCE_LAYOUT" -eq 1 ]] || return 0
+    flutter_project="${CODE_DIR}/appflowy_gateway/frontend/appflowy_flutter"
+    release_library="${flutter_bundle}/lib/libapp.so"
+    [[ -f "$release_library" ]] || return 0
+
+    newer_source="$(find \
+        "${flutter_project}/lib/main_gateway.dart" \
+        "${flutter_project}/lib/gateway_matrix" \
+        -type f -newer "$release_library" -print -quit 2>/dev/null || true)"
+    [[ -z "$newer_source" ]] && return 0
+
+    die "Flutter Release 早于界面源码：${newer_source}
+请先用 Flutter 3.27.4 重新构建：flutter build linux --release --target lib/main_gateway.dart"
+}
+
+ensure_app_backend() {
     require_docker
     require_license_or_die
-    seed_user_data
-    # 若未运行则 start
-    if ! "${COMPOSE[@]}" ps --status running 2>/dev/null | grep -q .; then
+    # 旧版本升级后可能已有其它容器在跑，但尚无 jiyi-sync；此时也需 reconcile。
+    if ! "${COMPOSE[@]}" ps --status running --services jiyi-sync 2>/dev/null \
+        | grep -qx "jiyi-sync"; then
         cmd_start
     fi
+}
+
+cmd_app() {
+    local desktop_entry="${CODE_DIR}/desktop/app.py"
+    ensure_app_backend
+    command -v python3 >/dev/null 2>&1 || die "缺少 python3，无法启动 Appica 桌面窗口"
+    [[ -f "$desktop_entry" ]] || die "缺少桌面入口：${desktop_entry}"
     export AI_GATEWAY_HOME="$DATA_DIR"
     export AI_GATEWAY_CODE="$CODE_DIR"
-    if [[ -f "${CODE_DIR}/desktop/app.py" ]]; then
-        PYTHONPATH="${CODE_DIR}${PYTHONPATH:+:$PYTHONPATH}" python3 "${CODE_DIR}/desktop/app.py" "$@"
-    else
-        warn "无 desktop/app.py，请用浏览器打开 http://127.0.0.1:4000"
+    info "正在打开 Appica 桌面控制台"
+    exec python3 "$desktop_entry" --no-start "$@"
+}
+
+cmd_flutter() {
+    local flutter_bundle launcher
+    ensure_app_backend
+    export AI_GATEWAY_HOME="$DATA_DIR"
+    export AI_GATEWAY_CODE="$CODE_DIR"
+    flutter_bundle="$(flutter_bundle_path)"
+    if [[ ! -x "${flutter_bundle}/AppFlowy" ]] \
+        || [[ ! -d "${flutter_bundle}/lib" ]] \
+        || [[ ! -d "${flutter_bundle}/data" ]]; then
+        die "缺少完整 Flutter Release：${flutter_bundle}（请重新构建或安装 1.1.0 deb）"
     fi
+
+    if is_installed_layout && [[ -x /usr/bin/ai-gateway-matrix ]]; then
+        launcher="/usr/bin/ai-gateway-matrix"
+    else
+        launcher="${REPO_ROOT}/run.sh"
+    fi
+    export AI_GATEWAY_LAUNCHER="$launcher"
+    export LD_LIBRARY_PATH="${flutter_bundle}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+    check_flutter_release_freshness "$flutter_bundle"
+    check_flutter_runtime_dependencies "$flutter_bundle"
+    info "正在打开 Flutter 桌面应用"
+    exec "${flutter_bundle}/AppFlowy" "$@"
 }
 
 # --- 以下 ensure_env / start 逻辑保持与原先一致（精简引用 CODE_DIR/DATA_DIR）---
@@ -345,8 +424,10 @@ ensure_runtime_env() {
 cmd_start() {
     require_docker
     require_license_or_die
+    restore_jiyi_on_fresh_home
     seed_user_data
     ensure_runtime_env
+    ensure_jiyi_target
     info "程序代码: ${CODE_DIR}"
     info "用户数据: ${DATA_DIR}"
 
@@ -405,10 +486,6 @@ cmd_start() {
     info "服务已启动"
     "${COMPOSE[@]}" ps
 
-    if jiyi_tool save >/dev/null 2>&1; then
-        info "已同步设置与 Key → $(resolve_jiyi_path)"
-    fi
-
     cat <<EOF
 
 访问:
@@ -417,7 +494,7 @@ cmd_start() {
   http://127.0.0.1:4000/console  专业控制台
 
 数据: ${DATA_DIR}
-记忆: $(resolve_jiyi_path)   (${prog_name:-./run.sh} jiyi save|load)
+记忆: $(resolve_jiyi_path)   (运行中自动同步；迁移后执行 ${prog_name:-./run.sh} jiyi load)
 EOF
 }
 
@@ -447,6 +524,26 @@ jiyi_tool() {
     python3 "$py" "$cmd" --data-dir "$DATA_DIR" --code-dir "$CODE_DIR" --jiyi "$jiyi" "$@"
 }
 
+restore_jiyi_on_fresh_home() {
+    local jiyi
+    jiyi="$(resolve_jiyi_path)"
+    if [[ ! -f "${DATA_DIR}/.env" && -s "$jiyi" ]]; then
+        jiyi_tool load >/dev/null
+        info "已从 ${jiyi} 自动导入迁移数据"
+    fi
+}
+
+ensure_jiyi_target() {
+    local jiyi
+    jiyi="$(resolve_jiyi_path)"
+    mkdir -p "$(dirname -- "$jiyi")"
+    if [[ ! -s "$jiyi" ]]; then
+        jiyi_tool save >/dev/null
+        info "已生成迁移凭证 ${jiyi}"
+    fi
+    chmod 600 "$jiyi"
+}
+
 cmd_jiyi() {
     local sub="${1:-save}"
     case "$sub" in
@@ -457,6 +554,10 @@ cmd_jiyi() {
             ;;
         *) die "未知 jiyi 子命令: $sub" ;;
     esac
+}
+
+cmd_doctor() {
+    AI_GATEWAY_JIYI="$(resolve_jiyi_path)" python3 "${CODE_DIR}/scripts/doctor.py" --data-dir "$DATA_DIR" --code-dir "$CODE_DIR" --live
 }
 
 # ── backup/restore（用户数据目录）──────────────────────
@@ -537,9 +638,9 @@ cmd_restore() {
 # ── 参数 ──────────────────────────────────────────────
 case "${1:-}" in
     -h|--help) usage; exit 0 ;;
-    app|start|stop|restart|status|logs|license|home|version|backup|restore|jiyi)
+    app|flutter|start|stop|restart|status|doctor|logs|license|home|version|backup|restore|jiyi)
         COMMAND="$1"; shift ;;
-    "") COMMAND="start" ;;
+    "") COMMAND="app" ;;
     *) usage >&2; exit 2 ;;
 esac
 
@@ -556,9 +657,11 @@ case "$COMMAND" in
     jiyi) printf '%b\n' "${BOLD}记忆文件 jiyi.txt${RESET}"; cmd_jiyi "$@" ;;
     backup) printf '%b\n' "${BOLD}备份${RESET}"; cmd_backup "$@" ;;
     restore) printf '%b\n' "${BOLD}恢复${RESET}"; cmd_restore "$@" ;;
-    app) printf '%b\n' "${BOLD}桌面应用${RESET}"; cmd_app "$@" ;;
+    app) printf '%b\n' "${BOLD}Appica 桌面控制台${RESET}"; cmd_app "$@" ;;
+    flutter) printf '%b\n' "${BOLD}Flutter 兼容界面${RESET}"; cmd_flutter "$@" ;;
     license) cmd_license "$@" ;;
     status) cmd_status ;;
+    doctor) printf '%b\n' "${BOLD}系统自检${RESET}"; cmd_doctor ;;
     logs) cmd_logs "$@" ;;
     stop) printf '%b\n' "${BOLD}停止${RESET}"; cmd_stop ;;
     restart) cmd_stop || true; cmd_start ;;

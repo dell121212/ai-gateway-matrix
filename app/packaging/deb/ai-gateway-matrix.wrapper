@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
-# 系统入口：转发到安装树中的 run.sh
+# 系统入口：统一转发 run.sh；无参数/app 启动 Appica 桌面控制台。
 set -Eeuo pipefail
-exec /usr/share/ai-gateway-matrix/run.sh "$@"
+
+SHARE="/usr/share/ai-gateway-matrix"
+exec "${SHARE}/run.sh" "$@"

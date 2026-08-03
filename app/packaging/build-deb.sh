@@ -11,14 +11,20 @@ if [[ ! -f "${APP}/VERSION" && -f "${REPO}/VERSION" ]]; then
 fi
 ROOT="$APP"
 VERSION="$(tr -d '[:space:]' < "${APP}/VERSION")"
-ARCH="all"
+ARCH="amd64"
 PKG_NAME="ai-gateway-matrix"
 OUT_DIR="${APP}/dist"
 STAGE="${OUT_DIR}/deb-root"
 DEB_FILE="${OUT_DIR}/${PKG_NAME}_${VERSION}_${ARCH}.deb"
+FLUTTER_BUNDLE="${APP}/appflowy_gateway/frontend/appflowy_flutter/build/linux/x64/release/bundle"
 RUN_SH="${REPO}/run.sh"
 if [[ ! -f "$RUN_SH" ]]; then
   RUN_SH="${APP}/run.sh"
+fi
+if [[ ! -x "${FLUTTER_BUNDLE}/AppFlowy" ]]; then
+  echo "缺少 Flutter release bundle: ${FLUTTER_BUNDLE}" >&2
+  echo "请先构建 lib/main_gateway.dart。" >&2
+  exit 1
 fi
 
 # 公钥可选：
@@ -62,6 +68,7 @@ mkdir -p \
   "${STAGE}/${SHARE}/dashboard" \
   "${STAGE}/${SHARE}/scripts" \
   "${STAGE}/${SHARE}/desktop" \
+  "${STAGE}/${SHARE}/flutter" \
   "${STAGE}/${SHARE}/licensing" \
   "${STAGE}/${BIN}" \
   "${STAGE}/${DOC}" \
@@ -84,6 +91,10 @@ install -m 0644 "${ROOT}/.dockerignore" "${STAGE}/${SHARE}/.dockerignore"
 # 标记安装布局：run.sh 据此把数据放到 ~/.config/...
 : > "${STAGE}/${SHARE}/.installed"
 chmod 0644 "${STAGE}/${SHARE}/.installed"
+
+# AppFlowy Flutter 桌面外壳：完整 release bundle，业务数据统一走 127.0.0.1:4000。
+rsync -a --delete "${FLUTTER_BUNDLE}/" "${STAGE}/${SHARE}/flutter/"
+chmod 0755 "${STAGE}/${SHARE}/flutter/AppFlowy"
 
 # 用户首次 seed 的模板（不写密钥）
 install -m 0644 "${ROOT}/templates/.env.example" "${STAGE}/${SHARE}/templates/.env.example"
@@ -207,8 +218,15 @@ sed \
 chmod 0644 "${STAGE}/${APPLICATIONS}/ai-gateway-matrix.desktop"
 
 # 文档
-install -m 0644 "${ROOT}/README.md" "${STAGE}/${DOC}/README.md"
-install -m 0644 "${ROOT}/PROVIDERS.md" "${STAGE}/${DOC}/PROVIDERS.md"
+install -m 0644 "${REPO}/README.md" "${STAGE}/${DOC}/README.md"
+install -m 0644 "${ROOT}/docs/PROVIDERS.md" "${STAGE}/${DOC}/PROVIDERS.md"
+install -m 0644 "${ROOT}/appflowy_gateway/LICENSE" \
+  "${STAGE}/${DOC}/APPFLOWY-AGPL-3.0.txt"
+install -m 0644 "${ROOT}/appflowy_gateway/GATEWAY_MIGRATION.md" \
+  "${STAGE}/${DOC}/APPFLOWY-GATEWAY-MIGRATION.md"
+install -m 0644 \
+  "${ROOT}/appflowy_gateway/frontend/appflowy_flutter/assets/gateway_game_ui/RIGHTS_NOTICE.md" \
+  "${STAGE}/${DOC}/GAME-UI-ASSETS-RIGHTS-NOTICE.md"
 if [[ -f "${ROOT}/docs/FREE_TIER_WATCHLIST.md" ]]; then
   mkdir -p "${STAGE}/${DOC}/docs"
   install -m 0644 "${ROOT}/docs/FREE_TIER_WATCHLIST.md" "${STAGE}/${DOC}/docs/FREE_TIER_WATCHLIST.md"
@@ -314,5 +332,6 @@ rm -f "$list_tmp"
 echo "... (文件列表已截断)"
 echo
 echo "安装: sudo dpkg -i $DEB_FILE"
-echo "启动: ai-gateway-matrix start"
+echo "启动应用: ai-gateway-matrix"
+echo "仅启动后端: ai-gateway-matrix start"
 echo "数据: ai-gateway-matrix home"

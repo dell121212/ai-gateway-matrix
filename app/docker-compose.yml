@@ -88,6 +88,9 @@ services:
       - POSTGRES_DB=litellm
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
+    networks:
+      - default
+      - jiyi-db
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U litellm -d litellm"]
       interval: 10s
@@ -109,8 +112,7 @@ services:
     # 服务同时 drop 全部 capabilities，不能依赖容器 root 绕过权限。
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     ports:
-      - "127.0.0.1:4000:8080"   # 中文统一入口 + OpenAI-compatible API
-      - "127.0.0.1:8080:8080"   # 兼容旧书签；与 4000 是同一个界面
+      - "127.0.0.1:4000:8080"   # 唯一对外入口：中文台、/v1 API、/console
     volumes:
       - ./config.yaml:/app/config.yaml   # 读写：优先级修改功能需要写入这个文件
       - ${AI_GATEWAY_CODE:-.}/gateway:/app/gateway:ro
@@ -119,6 +121,7 @@ services:
       - ./state:/app/state
       - ./.env:/app/.env            # 读写：仪表盘要往这里写你填的 key
       - ${AI_GATEWAY_CODE:-.}/dashboard:/app/dashboard:ro
+      - ${AI_GATEWAY_CODE:-.}/scripts:/app/scripts:ro
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
@@ -130,11 +133,12 @@ services:
       - PYTHONPATH=/app
       - LITELLM_UPSTREAM_URL=http://ai-gateway-matrix:4000
       - DASHBOARD_AUTH=${DASHBOARD_AUTH:-local}
-      - BILLING_FAIL_MODE=${BILLING_FAIL_MODE:-open}
-      - BILLING_RETRY_POLICY=${BILLING_RETRY_POLICY:-successful_only}
       - DEFAULT_REQUEST_MODE=${DEFAULT_REQUEST_MODE:-agent-stream}
-      - CREDITS_PER_USD=${CREDITS_PER_USD:-1000}
       - STORE_PROMPT_CONTENT=${STORE_PROMPT_CONTENT:-false}
+      - ALLOW_PRIVATE_CUSTOM_API=${ALLOW_PRIVATE_CUSTOM_API:-false}
+      - JIYI_DATABASE_SNAPSHOT=/app/state/private-api-export.json.gz
+      - JIYI_REDIS_SNAPSHOT=/app/state/gateway-redis-export.json.gz
+      - JIYI_STATE_DIR=/app/state
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -152,6 +156,70 @@ services:
       timeout: 10s
       retries: 3
       start_period: 20s
+
+  # jiyi.txt 自动同步：监听可迁移目录中的 Key、配置和 state，合并变更后写入
+  # 单一凭证文件，并定期导出调用统计 PostgreSQL 快照与 Token/路由 Redis 快照。
+  jiyi-sync:
+    build:
+      context: ${AI_GATEWAY_CODE:-.}
+      dockerfile: dashboard/Dockerfile
+    container_name: ai-gateway-matrix-jiyi-sync
+    restart: unless-stopped
+    init: true
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    read_only: true
+    volumes:
+      - .:/data:ro
+      - ./state:/data/state
+      - ${AI_GATEWAY_CODE:-.}/scripts:/app/scripts:ro
+      - ${AI_GATEWAY_JIYI_PATH:?AI_GATEWAY_JIYI_PATH is required; run ./run.sh}:/export/jiyi.txt
+    environment:
+      - DATABASE_URL=postgresql://litellm:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required; run ./run.sh}@postgres:5432/litellm
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD is required; run ./run.sh}
+    command:
+      [
+        "python",
+        "/app/scripts/jiyi_store.py",
+        "watch",
+        "--data-dir",
+        "/data",
+        "--jiyi",
+        "/export/jiyi.txt",
+        "--interval",
+        "1",
+        "--debounce",
+        "1",
+        "--ready-file",
+        "/tmp/jiyi-sync.ready",
+        "--database-snapshot",
+        "/data/state/private-api-export.json.gz",
+        "--database-interval",
+        "5",
+        "--redis-snapshot",
+        "/data/state/gateway-redis-export.json.gz",
+        "--redis-interval",
+        "5",
+      ]
+    tmpfs:
+      - /tmp:size=1m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - default
+      - jiyi-db
+    depends_on:
+      dashboard:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "from pathlib import Path; import time; p=Path('/tmp/jiyi-sync.ready'); assert p.is_file() and time.time() - p.stat().st_mtime < 20"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
   provider-monitor:
     build:
@@ -201,3 +269,7 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
+
+networks:
+  jiyi-db:
+    internal: true

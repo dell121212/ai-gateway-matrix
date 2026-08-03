@@ -1229,6 +1229,8 @@ class ComplexityRouterHook(CustomLogger):
             "arithmetic_mismatch", "llm_reject", "too_short",
         }:
             await quota_manager.mark_failure(display_id, "quality_error")
+        if not isinstance(getattr(self, "_stats", None), dict):
+            self._stats = {}
         self._stats["errors"] = int(self._stats.get("errors") or 0) + 1
         logger.warning(
             "[ai-gateway-matrix] 输出质检失败（渠道=%s，原因=%s），切换同档 peer",
@@ -1257,6 +1259,8 @@ class ComplexityRouterHook(CustomLogger):
             await self._reject_bad_response(request_data, reason)
             return response  # pragma: no cover
         # agent-stream 已向客户端推流：只冷却/记质量问题，不换模型拼接
+        if not isinstance(getattr(self, "_stats", None), dict):
+            self._stats = {}
         self._stats["stream_quality_flagged"] = (
             int(self._stats.get("stream_quality_flagged") or 0) + 1
         )

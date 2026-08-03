@@ -88,3 +88,26 @@ def test_quality_failure_has_ten_minute_cooldown(monkeypatch):
 
     key = next(iter(fake.ttls))
     assert fake.ttls[key] == 600
+
+
+def test_candidate_selection_preserves_brain_configured_order(monkeypatch):
+    """智脑已经决定档位；档内必须尊重用户配置的顺序。"""
+    first = {"display_id": "configured-first"}
+    second = {"display_id": "configured-second"}
+
+    async def no_runtime_reranking(_display_id):
+        raise AssertionError("档内选择不应再次读取统计并重排智脑候选")
+
+    async def no_cooldown(_display_id):
+        return 0
+
+    async def reserve(_channel):
+        return True
+
+    monkeypatch.setattr(quota_manager.usage_tracker, "get_usage", no_runtime_reranking)
+    monkeypatch.setattr(quota_manager, "cooldown_remaining", no_cooldown)
+    monkeypatch.setattr(quota_manager, "reserve_channel", reserve)
+
+    selected = asyncio.run(quota_manager.choose_and_reserve([first, second]))
+
+    assert selected is first

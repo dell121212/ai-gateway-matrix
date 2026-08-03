@@ -9,7 +9,6 @@ from typing import Any, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm.exc import StaleDataError
 
 from dashboard.app.core.config import get_settings
 from dashboard.app.core.logging import setup_logging

@@ -12,5 +12,5 @@ Icon=@ICON@
 Terminal=false
 Categories=Network;Development;Utility;
 StartupNotify=true
-StartupWMClass=ai-gateway-matrix
+StartupWMClass=com.aigatewaymatrix.desktop
 Keywords=AI;LLM;API;Gateway;OpenAI;

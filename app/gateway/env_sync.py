@@ -265,8 +265,15 @@ def start_background_watcher(interval_sec: float = 3.0) -> None:
     logger.info("[ai-gateway-matrix] env_sync 后台热加载已启动（每 %.1fs）", interval_sec)
 
 
-# 模块被 LiteLLM 加载 custom_router_hook 时一并启动 watcher
+# 只有真正承载 LiteLLM Router 的进程才需要 watcher。仪表盘也会导入
+# env_sync 来写 reload.signal，但其镜像没有 LiteLLM、runtime-config 也是只读；
+# 在那里启动线程只会持续制造“可忽略”的告警和无效重建。
 try:
-    start_background_watcher()
+    from importlib.util import find_spec
+
+    if find_spec("litellm") is not None:
+        start_background_watcher()
+    else:
+        logger.debug("env_sync watcher 跳过：当前进程不承载 LiteLLM Router")
 except Exception as exc:
     logger.debug("start_background_watcher 跳过: %s", exc)
